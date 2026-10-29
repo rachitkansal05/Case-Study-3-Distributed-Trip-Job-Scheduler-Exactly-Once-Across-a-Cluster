@@ -59,6 +59,7 @@ public final class Fixtures {
         private Duration misfireThreshold = Duration.ofSeconds(60);
         private int maxAttempts = 5;
         private Integer partition;
+        private boolean pending;
 
         private JobSpec(String tenant) {
             this.tenant = tenant;
@@ -73,17 +74,20 @@ public final class Fixtures {
         public JobSpec misfireThreshold(Duration v) { misfireThreshold = v; return this; }
         public JobSpec maxAttempts(int v) { maxAttempts = v; return this; }
         public JobSpec partition(int v) { partition = v; return this; }
+        /** Leave it to the materializer (next_fire_at = run_at, as the API creates one-off jobs). */
+        public JobSpec pending() { pending = true; return this; }
 
         /** Inserts a one-off job (run_at = now) without runs; returns its id. */
         public UUID insert() {
             int p = partition != null ? partition : PartitionHasher.partitionOf(id);
             jdbc.sql("""
                     INSERT INTO job (id, tenant_id, kind, handler, run_at, payload, priority, max_run_time,
-                                     misfire, misfire_threshold, max_attempts, partition_id, version)
-                    VALUES (?, ?, 'ONE_OFF', ?, clock_timestamp(), ?::jsonb, ?, ? * interval '1 millisecond',
-                            ?, ? * interval '1 millisecond', ?, ?, 0)""")
+                                     misfire, misfire_threshold, max_attempts, partition_id, version, next_fire_at)
+                    VALUES (?, ?, 'ONE_OFF', ?, date_trunc('milliseconds', clock_timestamp()), ?::jsonb, ?,
+                            ? * interval '1 millisecond', ?, ? * interval '1 millisecond', ?, ?, 0,
+                            CASE WHEN ? THEN date_trunc('milliseconds', clock_timestamp()) END)""")
                     .params(id, tenant, handler.name(), payload, priority, maxRunTime.toMillis(), misfire.name(),
-                            misfireThreshold.toMillis(), maxAttempts, p)
+                            misfireThreshold.toMillis(), maxAttempts, p, pending)
                     .update();
             return id;
         }
