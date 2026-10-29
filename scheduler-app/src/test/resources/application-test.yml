@@ -1,3 +1,7 @@
 # Test profile: datasource URL is injected by AbstractEmbeddedPostgresIT.
 scheduler:
   node-id: test-node
+  engine:
+    # Spring-context ITs (API team) must not race the engine loops. Engine ITs build their
+    # SchedulerNode instances explicitly, or enable the engine with a property override.
+    enabled: false
