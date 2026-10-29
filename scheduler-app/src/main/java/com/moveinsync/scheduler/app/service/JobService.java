@@ -55,18 +55,21 @@ public class JobService {
     private final JobRunRepository runs;
     private final TenantSettingsService settings;
     private final FireTimeService fireTimes;
+    private final NextFireTimesCache nextFireTimesCache;
     private final PartitionPlacement placement;
     private final SchedulerProperties properties;
     private final ObjectMapper mapper;
     private final Clock clock;
 
     public JobService(JobRepository jobs, JobRunRepository runs, TenantSettingsService settings,
-                      FireTimeService fireTimes, PartitionPlacement placement, SchedulerProperties properties,
+                      FireTimeService fireTimes, NextFireTimesCache nextFireTimesCache,
+                      PartitionPlacement placement, SchedulerProperties properties,
                       ObjectMapper mapper, Clock clock) {
         this.jobs = jobs;
         this.runs = runs;
         this.settings = settings;
         this.fireTimes = fireTimes;
+        this.nextFireTimesCache = nextFireTimesCache;
         this.placement = placement;
         this.properties = properties;
         this.mapper = mapper;
@@ -110,7 +113,10 @@ public class JobService {
         return view(load(caller.scope(), jobId), caller);
     }
 
-    /** Next {@code count} fire times. A disabled job has none; a one-off job has its {@code run_at}. */
+    /**
+     * Next {@code count} fire times. A disabled job has none; a one-off job has its {@code run_at};
+     * recurring results come from {@link NextFireTimesCache} (30 s TTL).
+     */
     @Transactional(readOnly = true)
     public NextFireTimesView nextFireTimes(Caller caller, UUID jobId, int count) {
         JobRow job = load(caller.scope(), jobId);
@@ -121,7 +127,7 @@ public class JobService {
         } else if (job.kind() == JobKind.ONE_OFF) {
             times = List.of(FireTimeView.of(job.runAt(), tenant.zone()));
         } else {
-            times = fireTimes.nextFireTimes(job.cron(), tenant.zone(), clock.instant(), count);
+            times = nextFireTimesCache.nextFireTimes(job, tenant.zone(), count);
         }
         return new NextFireTimesView(job.id(), tenant.zone().getId(), times);
     }
