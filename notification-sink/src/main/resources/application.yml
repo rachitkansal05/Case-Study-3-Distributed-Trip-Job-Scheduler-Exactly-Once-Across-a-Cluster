@@ -13,6 +13,11 @@ spring:
     create-schemas: true
     locations: classpath:db/migration
 
+sink:
+  admin:
+    # Required as X-Admin-Token on /admin/**. Dev default only: set SINK_ADMIN_TOKEN outside dev.
+    token: ${SINK_ADMIN_TOKEN:dev-only-sink-admin-token}
+
 server:
   port: ${SERVER_PORT:8090}
   shutdown: graceful
@@ -24,8 +29,11 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,prometheus
   endpoint:
     health:
       probes:
         enabled: true
+  metrics:
+    tags:
+      application: notification-sink
