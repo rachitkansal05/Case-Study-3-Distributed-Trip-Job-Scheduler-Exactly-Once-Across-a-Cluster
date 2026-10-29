@@ -42,7 +42,7 @@ docker compose exec -e PGOPTIONS='-c default_transaction_read_only=on' postgres 
 - **Never** lower `fencing_epoch`, `fencing_seq` or `cluster_meta.cluster_generation`, and never edit the sink's `sink.run_fence` or `sink.delivery` tables. That turns off fencing and dedup.
 - **Never** edit `partition_lease` or `scheduler_node`. Nodes fix ownership themselves within about 7 s.
 - **Never** delete `dead_letter` rows. Replay them, or leave them.
-- Killing or restarting a scheduler node **is** safe: its runs are taken over within 11.2 s and the sink drops the duplicates.
+- Killing or restarting a scheduler node **is** safe: its runs are taken over within about 10.7 s (alert threshold 11.2 s) and the sink drops the duplicates.
 
 ---
 
@@ -466,26 +466,26 @@ sum by (node) (increase(scheduler_lease_renew_failures_total[2m])) > 0
 
 **Safe actions**
 - Re-enable or clean the proxy: `curl -X POST localhost:8474/proxies/pg-scheduler-2 -d '{"enabled":true}'`.
-- Restart the node if it stays unhealthy. Its runs move within 11.2 s.
+- Restart the node if it stays unhealthy. Its runs move within about 10.7 s.
 - **Do not** raise lease durations or the self-fence margin in production config during an incident.
 
 ---
 
 ## SchedulerOrphanTakeoverSlow
 
-**Severity:** critical, fires at once. Bound: 11.2 s (10 s lease + 1 s sweep + 0.2 s claim).
+**Severity:** critical, fires at once. Takeover bound from a crash: 10.7 s (10 s lease + 0.5 s sweep + 0.2 s claim); the alert threshold is 11.2 s, the bound of the original 1 s sweep.
 
 ```promql
 histogram_quantile(0.99, sum by (le) (rate(scheduler_orphan_takeover_time_seconds_bucket[10m]))) > 11.2
 ```
 
-**What it means.** Runs whose node died took more than 11.2 s (lease expiry to restart, DB time) to restart. Buckets are coarse (5, 11, 30 s), so a value just over 11.2 means "some takeovers fell in the 11-30 s bucket".
+**What it means.** The histogram measures lease expiry to restart (DB time), not crash to restart. Normally that is under about 0.7 s (one 500 ms sweep plus the claim), so the alert fires only when orphans wait more than 11.2 s *after* their lease expired, which is far past the bound. Buckets are 5, 10.7, 11, 11.2 and 30 s, so a value just over 11.2 means "some takeovers fell in the 11.2-30 s bucket". For an early warning, look at `expired_for` in the [stuck RUNNING runs](#stuck-running-runs) query.
 
 **Likely causes**
 - Every live node is busy: no worker free for recovered runs.
 - The tenant has no free slot, because a slot is held by a run whose lease is still valid.
 - Only one node, or no node, left alive.
-- A slow database makes the 1 s orphan sweep fall behind.
+- A slow database makes the 500 ms orphan sweep fall behind.
 
 **First 3 checks**
 
@@ -668,7 +668,7 @@ max by (tenant) (scheduler_tenant_cap{kind="effective"}) > max by (tenant) (sche
 up{job=~"scheduler|notification-sink"} == 0
 ```
 
-**What it means.** Prometheus cannot scrape a scheduler node or the sink. If it is a node, its runs fail over within 11.2 s and its partitions within about 7 s. If it is the sink, every delivery fails and retries.
+**What it means.** Prometheus cannot scrape a scheduler node or the sink. If it is a node, its runs fail over within about 10.7 s and its partitions within about 7 s. If it is the sink, every delivery fails and retries.
 
 **Likely causes**
 - The container crashed, is restarting, or is paused.
@@ -721,7 +721,7 @@ All read-only. Run them in the read-only session (see the top of this runbook). 
 
 ### Stuck RUNNING runs
 
-`RUNNING` with an expired lease (the sweep should reap these within about 1 s), or running far longer than `max_run_time` (the hard stop should have ended it). `started_at` is the first start, across retries.
+`RUNNING` with an expired lease (the 500 ms sweep should reap these within about 0.7 s), or running far longer than `max_run_time` (the hard stop should have ended it). `started_at` is the first start, across retries.
 
 ```sql
 SELECT id, tenant_id, job_id, owner_node, slot_no, attempt, lease_lost_count,
