@@ -1,0 +1,8 @@
+# Normalise text files; shell scripts and the Maven wrapper must keep LF so they run in Linux containers/CI.
+* text=auto
+mvnw text eol=lf
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.jar binary

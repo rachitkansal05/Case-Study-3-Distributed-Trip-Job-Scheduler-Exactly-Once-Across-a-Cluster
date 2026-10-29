@@ -1,0 +1,129 @@
+# One-command local cluster:  docker compose up --build
+#
+#   postgres           5432   single PostgreSQL 16 (demo only; production failover is deploy/patroni/)
+#   scheduler-1..3     8081-8083   identical scheduler nodes
+#   notification-sink  8090   mock provider (idempotent + fencing-aware)
+#   toxiproxy          8474   fault injection API; every node reaches Postgres and the sink through
+#                             its own proxy, so one node can be cut off without touching the others
+#   prometheus         9090
+#   grafana            3000   admin / admin (dev only)
+#
+# All credentials below are obviously-dev defaults. Override them for anything but a laptop.
+
+x-scheduler: &scheduler
+  build:
+    context: .
+    dockerfile: scheduler-app/Dockerfile
+  image: trip-scheduler/scheduler-app:dev
+  restart: unless-stopped
+  depends_on:
+    postgres:
+      condition: service_healthy
+    toxiproxy:
+      condition: service_started
+    notification-sink:
+      condition: service_started
+  environment: &scheduler-env
+    SPRING_PROFILES_ACTIVE: json
+    SPRING_DATASOURCE_USERNAME: scheduler
+    SPRING_DATASOURCE_PASSWORD: scheduler
+    SCHEDULER_JWT_HMAC_SECRET: ${SCHEDULER_JWT_HMAC_SECRET:-dev-only-insecure-hmac-key-do-not-use-in-prod-0123456789}
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: scheduler
+      POSTGRES_USER: scheduler
+      POSTGRES_PASSWORD: scheduler
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scheduler -d scheduler"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.9.0
+    command: ["-host=0.0.0.0", "-config=/config/toxiproxy.json"]
+    volumes:
+      - ./ops/toxiproxy/toxiproxy.json:/config/toxiproxy.json:ro
+    ports:
+      - "8474:8474"
+
+  notification-sink:
+    build:
+      context: .
+      dockerfile: notification-sink/Dockerfile
+    image: trip-scheduler/notification-sink:dev
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/scheduler
+      SPRING_DATASOURCE_USERNAME: scheduler
+      SPRING_DATASOURCE_PASSWORD: scheduler
+    ports:
+      - "8090:8090"
+
+  scheduler-1:
+    <<: *scheduler
+    environment:
+      <<: *scheduler-env
+      NODE_ID: scheduler-1
+      SPRING_DATASOURCE_URL: jdbc:postgresql://toxiproxy:25431/scheduler
+      SCHEDULER_SINK_BASE_URL: http://toxiproxy:28091
+    ports:
+      - "8081:8080"
+
+  scheduler-2:
+    <<: *scheduler
+    environment:
+      <<: *scheduler-env
+      NODE_ID: scheduler-2
+      SPRING_DATASOURCE_URL: jdbc:postgresql://toxiproxy:25432/scheduler
+      SCHEDULER_SINK_BASE_URL: http://toxiproxy:28092
+    ports:
+      - "8082:8080"
+
+  scheduler-3:
+    <<: *scheduler
+    environment:
+      <<: *scheduler-env
+      NODE_ID: scheduler-3
+      SPRING_DATASOURCE_URL: jdbc:postgresql://toxiproxy:25433/scheduler
+      SCHEDULER_SINK_BASE_URL: http://toxiproxy:28093
+    ports:
+      - "8083:8080"
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    command: ["--config.file=/etc/prometheus/prometheus.yml"]
+    volumes:
+      - ./ops/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      - scheduler-1
+      - scheduler-2
+      - scheduler-3
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./ops/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+volumes:
+  pgdata:
