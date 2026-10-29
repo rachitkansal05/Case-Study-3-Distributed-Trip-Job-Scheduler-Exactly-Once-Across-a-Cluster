@@ -1,4 +1,8 @@
-# Test profile: datasource URL is injected by AbstractEmbeddedPostgresIT.
+# Test profile. AbstractEmbeddedPostgresIT registers test.db.default-url (the shared database);
+# a subclass that needs its own database registers test.db.url, which takes precedence here.
+spring:
+  datasource:
+    url: ${test.db.url:${test.db.default-url}}
 scheduler:
   node-id: test-node
   engine:

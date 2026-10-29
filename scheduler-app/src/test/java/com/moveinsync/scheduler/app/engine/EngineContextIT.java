@@ -35,7 +35,7 @@ class EngineContextIT extends AbstractEmbeddedPostgresIT {
     @DynamicPropertySource
     static void ownDatabase(DynamicPropertyRegistry registry) {
         EmbeddedPostgresSupport.createDatabase(OWN_DATABASE);
-        registry.add("spring.datasource.url", () -> EmbeddedPostgresSupport.jdbcUrl(OWN_DATABASE));
+        registry.add(OWN_DATABASE_URL_PROPERTY, () -> EmbeddedPostgresSupport.jdbcUrl(OWN_DATABASE));
     }
 
     @Autowired
@@ -43,6 +43,14 @@ class EngineContextIT extends AbstractEmbeddedPostgresIT {
 
     @Autowired
     private TestRestTemplate http;
+
+    @Autowired
+    private org.springframework.jdbc.core.simple.JdbcClient jdbc;
+
+    @Test
+    void runsOnItsOwnDatabase() {
+        assertThat(jdbc.sql("SELECT current_database()").query(String.class).single()).isEqualTo(OWN_DATABASE);
+    }
 
     @Test
     void nodeStartsAndExposesMetrics() {
