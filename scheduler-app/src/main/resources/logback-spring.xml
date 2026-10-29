@@ -1,17 +1,32 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Foundation default; the Observability team owns this file from here on (PiiMaskingConverter,
-  MDC fields nodeId, runId, jobId, tenantId, fencingToken, attempt, idemKeyHash).
-  Profile "json" (set in docker-compose) writes JSON lines with all MDC fields; otherwise plain text.
-  Payloads are never logged.
+  Owned by Observability. PII masking is wired for every output:
+    - plain text: %maskedMsg (PiiMaskingConverter) and %maskedEx (PiiMaskingThrowableConverter)
+      replace %m and %wEx in Spring Boot's default console pattern;
+    - JSON (profile "json", set in docker-compose): LogstashEncoder with a
+      MaskingJsonGeneratorDecorator + PiiValueMasker masking every string value (message, MDC, stack trace).
+  MDC fields traceId and tenantId are set per request by a servlet filter (engine loops add
+  nodeId, runId, jobId, fencingToken, attempt, idemKeyHash); JSON output includes all MDC fields.
+  Emails, coordinates and phone numbers are masked; payloads are never logged.
 -->
 <configuration>
   <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+  <conversionRule conversionWord="maskedMsg"
+                  class="com.moveinsync.scheduler.app.observability.PiiMaskingConverter"/>
+  <conversionRule conversionWord="maskedEx"
+                  class="com.moveinsync.scheduler.app.observability.PiiMaskingThrowableConverter"/>
+
+  <property name="MASKED_CONSOLE_LOG_PATTERN"
+            value="%clr(%d{${LOG_DATEFORMAT_PATTERN:-yyyy-MM-dd'T'HH:mm:ss.SSSXXX}}){faint} %clr(${LOG_LEVEL_PATTERN:-%5p}) %clr(${PID:- }){magenta} %clr(---){faint} %clr(%applicationName[%15.15t]){faint} %clr(${LOG_CORRELATION_PATTERN:-}){faint}%clr(%-40.40logger{39}){cyan} %clr(:){faint} [%X{traceId:-}] [%X{tenantId:-}] %maskedMsg%n%maskedEx"/>
 
   <springProfile name="json">
     <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
       <encoder class="net.logstash.logback.encoder.LogstashEncoder">
         <includeMdc>true</includeMdc>
+        <jsonGeneratorDecorator class="net.logstash.logback.mask.MaskingJsonGeneratorDecorator">
+          <valueMasker class="com.moveinsync.scheduler.app.observability.PiiValueMasker"/>
+        </jsonGeneratorDecorator>
       </encoder>
     </appender>
     <root level="INFO">
@@ -20,7 +35,15 @@
   </springProfile>
 
   <springProfile name="!json">
-    <include resource="org/springframework/boot/logging/logback/console-appender.xml"/>
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+      <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
+        <level>${CONSOLE_LOG_THRESHOLD}</level>
+      </filter>
+      <encoder>
+        <pattern>${MASKED_CONSOLE_LOG_PATTERN}</pattern>
+        <charset>${CONSOLE_LOG_CHARSET}</charset>
+      </encoder>
+    </appender>
     <root level="INFO">
       <appender-ref ref="CONSOLE"/>
     </root>
