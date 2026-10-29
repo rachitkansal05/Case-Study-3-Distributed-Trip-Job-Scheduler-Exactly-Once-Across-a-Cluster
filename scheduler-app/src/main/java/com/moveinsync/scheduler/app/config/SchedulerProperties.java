@@ -63,7 +63,7 @@ public record SchedulerProperties(
     public record Claim(@NotNull Duration pollInterval) {
     }
 
-    /** Orphan sweep every 1 s, in any partition. */
+    /** Orphan sweep every 500 ms, in any partition (takeover bound 10 s + 0.5 s + 0.2 s = 10.7 s). */
     public record OrphanSweep(@NotNull Duration interval) {
     }
 

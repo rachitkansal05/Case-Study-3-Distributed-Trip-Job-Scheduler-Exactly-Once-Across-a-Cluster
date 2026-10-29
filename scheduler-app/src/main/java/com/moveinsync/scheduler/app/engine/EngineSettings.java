@@ -119,7 +119,7 @@ public record EngineSettings(
         private Duration heartbeatInterval = Duration.ofSeconds(2);
         private Duration deadAfter = Duration.ofSeconds(6);
         private Duration pollInterval = Duration.ofMillis(200);
-        private Duration orphanSweepInterval = Duration.ofSeconds(1);
+        private Duration orphanSweepInterval = Duration.ofMillis(500);
         private int workers = 64;
         private int reservedForRecovery = 1;
         private int leaseLostLimit = 20;

@@ -54,7 +54,7 @@ scheduler:
   claim:
     poll-interval: 200ms
   orphan-sweep:
-    interval: 1s
+    interval: 500ms
   workers:
     count: 64
     reserved-for-recovery: 1
