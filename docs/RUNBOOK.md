@@ -337,7 +337,7 @@ sum by (reason) (increase(scheduler_lease_lost_total[5m])) > 5
 
 Lease-lost attempts do not count toward `max_attempts`, but after 20 of them a run is dead-lettered with `FENCING_CONFLICT`.
 
-**There is no metric labelled by dead-letter error code.** Check `FENCING_CONFLICT` dead letters with SQL on `dead_letter.error_code` (check 3).
+`FENCING_CONFLICT` dead letters are counted by `scheduler_dead_letters_total{error_code="FENCING_CONFLICT"}` and alert as `SchedulerFencingConflictDeadLetters`. Check 3 lists them with SQL.
 
 **Likely causes**
 - Same as `SchedulerStaleCommitsRejected`: pauses, DB latency, CPU starvation.
@@ -384,6 +384,43 @@ Lease-lost attempts do not count toward `max_attempts`, but after 20 of them a r
 - Fix the stalled node (unpause, restart, remove the toxic).
 - Replay `FENCING_CONFLICT` dead letters only after lease losses have stopped. Replay resets `lease_lost_count`.
 - **Do not** replay in a loop while losses continue. The runs dead-letter again.
+
+---
+
+## SchedulerFencingConflictDeadLetters
+
+**Severity:** critical, fires at once.
+
+```promql
+sum(increase(scheduler_dead_letters_total{error_code="FENCING_CONFLICT"}[15m])) > 0
+```
+
+**What it means.** A run lost its lease 20 times and was dead-lettered with `FENCING_CONFLICT` instead of being retried forever. The effect was not delivered twice (the sink's fencing check held), but the run has stopped and needs an operator.
+
+**Likely causes**
+- A node that keeps stalling (GC pauses, CPU starvation, `docker pause`) while holding the run. `SchedulerLeaseLostSpike` usually fired first.
+- A handler that runs longer than the lease can be renewed under DB latency.
+- None of the above: a fencing bug. Escalate with the run ids.
+
+**First 3 checks**
+
+1. Which error codes are dead-lettering, and how fast:
+
+   ```promql
+   sum by (error_code) (increase(scheduler_dead_letters_total[15m]))
+   ```
+
+2. Lease losses by node and reason over the same window:
+
+   ```promql
+   sum by (node, reason) (increase(scheduler_lease_lost_total[15m]))
+   ```
+
+3. The dead-lettered runs (same SQL as check 3 of [SchedulerLeaseLostSpike](#schedulerleaselostspike)).
+
+**Safe actions**
+- Fix or drain the stalling node first.
+- Then replay the runs ([Replaying dead letters](#replaying-dead-letters)). The sink's idempotency key makes a replay safe even if the earlier attempt reached it.
 
 ---
 
