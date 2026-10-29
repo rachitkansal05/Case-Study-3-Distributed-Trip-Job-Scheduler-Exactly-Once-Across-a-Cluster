@@ -10,9 +10,10 @@ This file says which team owns which code, how teams share the database and conf
 | **Core** | `scheduler-core` packages `time`, `policy`, `cluster`, `fairness`, `lease` | Plain Java only: no Spring, no JDBC, no logging framework. Unit tests use in-memory fakes of the `ports`. |
 | **Sink** | `notification-sink` (all packages) and its `sink` schema migrations | Must implement the `EffectSink` contract (see the Javadoc). |
 | **API** | `scheduler-app` packages `api`, `service`, `security`, `error`, plus the job, tenant and dead-letter repositories (`repository.job`, `repository.tenant`, `repository.deadletter`); Flyway V100–V199 | `security.BootstrapSecurityConfig` is a Foundation placeholder that the API team replaces. |
-| **Engine** | `scheduler-app` packages `engine`, `handler`, `repository.claim` (`JdbcClaimProtocol`, `JdbcPartitionLeaseStore`, `JdbcMembershipStore`, the sink HTTP client); Flyway V200–V299 | `JdbcClaimProtocol` is the **only** writer of `job_run.state` and tenant slots. |
-| **Observability** | `scheduler-app` package `observability` (`SchedulerMetrics`, `PiiMaskingConverter`, logback config), `ops/prometheus/`, `ops/grafana/` | The dashboard JSON in `ops/grafana/dashboards/` is a placeholder. |
-| **Reliability** | `chaos/`, `loadgen/`, `deploy/patroni/`, failure-injection ITs (`*FailoverIT`, `NodeCrashIT`, `GcPauseIT`, …) | Toxiproxy proxies are defined in `ops/toxiproxy/toxiproxy.json`. |
+| **Engine** | `scheduler-app` packages `handler`, `repository.claim` (`JdbcClaimProtocol`), `repository.cluster` (`JdbcPartitionLeaseStore`, `JdbcMembershipStore`, `DbSchedulerClock`), `sink` (`HttpEffectSink`, the sink HTTP client); Flyway V200–V299 | `JdbcClaimProtocol` is the **only** engine writer of `job_run.state` and tenant slots (the API's four documented exceptions are listed in its Javadoc). The `engine` package moved to Reliability. |
+| **Observability** | `scheduler-app` package `observability` (`PiiMasker`, `PiiMaskingConverter`, `PiiValueMasker`), `logback-spring.xml`, `ops/prometheus/`, `ops/grafana/`, `ops/metric-names.txt` | The metrics themselves are `engine.EngineMetrics` (Reliability). The dashboard and the 13 alert rules are checked by `GrafanaDashboardTest`, `AlertRulesTest` and `RunbookTest`. |
+| **Reliability** | `scheduler-app` package `engine` (`SchedulerNode`, `Poller`, `Dispatcher`, `RunExecutor`, `OrphanSweep`, `EngineMetrics`, …), `chaos/`, `loadgen/`, `deploy/patroni/`, failure-injection ITs (`FailoverFencingIT`, `StrictSyncIT`, `NodeCrashIT`, `GcPauseIT`, `EndToEndKillIT`, `EndToEndFreezeIT`, …), `docs/BENCHMARK.md` | Toxiproxy proxies are defined in `ops/toxiproxy/toxiproxy.json`. `loadgen` test-depends on the non-repackaged `scheduler-app` jar (classifier `plain`, built into `scheduler-app/target/plain/` so the Dockerfile's `target/scheduler-app-*.jar` glob never picks it up) and on `notification-sink`. |
+| **Docs** | `README.md`, `PLAN.md`, `docs/DESIGN.md`, `docs/DEMO.md`, `docs/postman/` | Every command, endpoint, property, metric and number must match the code and tests. |
 
 Base packages: `com.moveinsync.scheduler.core.*`, `com.moveinsync.scheduler.app.*`, `com.moveinsync.scheduler.sink.*`, `com.moveinsync.scheduler.loadgen.*`.
 
@@ -76,12 +77,14 @@ Locks are always taken slot row first, then run row. Time comparisons always use
 | `scheduler.partition-lease.duration` / `.renew-interval` / `.loop-interval` | `6s` / `2s` / `1s` | |
 | `scheduler.membership.heartbeat-interval` / `.dead-after` | `2s` / `6s` | |
 | `scheduler.claim.poll-interval` | `200ms` | |
-| `scheduler.orphan-sweep.interval` | `1s` | |
+| `scheduler.orphan-sweep.interval` | `500ms` (takeover bound 10 s + 0.5 s + 0.2 s = 10.7 s) | |
 | `scheduler.workers.count` / `.reserved-for-recovery` | `64` / `1` | |
 | `scheduler.self-fence-margin` | `2s` | |
 | `scheduler.tenant.default-cap` | `32` | |
 | `scheduler.misfire.default-threshold` | `60s` | |
 | `scheduler.retry.max-attempts` / `.lease-lost-limit` / `.backoff-base` / `.backoff-cap` | `5` / `20` / `2s` / `5m` | |
+| `scheduler.api.idempotency-purge.interval` / `.batch-size` / `.max-batches` | `10m` / `1000` / `100` (read with `@Value` in `IdempotencyPurge`, not part of `SchedulerProperties`; retention is fixed at 24 h) | |
+| `scheduler.engine.*` | see `EngineProperties` (`enabled`, materializer, compactor, metrics, clock, epoch guard, sink client timeouts) | |
 | `scheduler.sink.base-url` | `http://localhost:8090` | `SCHEDULER_SINK_BASE_URL` |
 | `scheduler.security.jwt-hmac-secret` | dev-only key | `SCHEDULER_JWT_HMAC_SECRET` (**set this outside dev**) |
 | `spring.datasource.url` / `username` / `password` | local `scheduler` DB | `SPRING_DATASOURCE_URL` / `_USERNAME` / `_PASSWORD` |
@@ -103,7 +106,7 @@ Add new keys under `scheduler.<your-area>` and register them in `SchedulerProper
 
 - Only team **managers** run `git add` / `git commit`. Subagents never run git commands that change state.
 - Use [Conventional Commits](https://www.conventionalcommits.org/): `feat(engine): …`, `fix(api): …`, `test(core): …`, `build: …`, `docs: …`. Keep commits small and focused.
-- Every commit message ends with the trailer `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+- Commits show only the author's name: no `Co-Authored-By` or other AI-attribution trailers.
 - Work on your team branch (`team/<name>`). Do not push to `main`.
 - `./mvnw -B verify` must pass before each commit that touches code.
 - Never log payloads or personal data. Never commit secrets; dev defaults must be obviously fake and overridable by environment variables.
