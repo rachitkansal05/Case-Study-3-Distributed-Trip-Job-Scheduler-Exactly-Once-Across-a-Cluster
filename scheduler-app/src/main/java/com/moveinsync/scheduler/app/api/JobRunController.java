@@ -1,5 +1,7 @@
 package com.moveinsync.scheduler.app.api;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.moveinsync.scheduler.app.api.dto.PageView;
 import com.moveinsync.scheduler.app.api.dto.RunView;
 import com.moveinsync.scheduler.app.security.Caller;
@@ -40,7 +42,16 @@ public class JobRunController {
                                      @RequestHeader(IdempotencyKeys.HEADER) String idempotencyKey) {
         String key = IdempotencyKeys.requireValid(idempotencyKey);
         return idempotency.execute(caller, key, "POST /api/v1/jobs/" + jobId + "/trigger", null,
-                () -> ResponseEntity.status(HttpStatus.ACCEPTED).body(runs.trigger(caller, jobId, key)));
+                () -> ResponseEntity.status(HttpStatus.ACCEPTED).body(runs.trigger(caller, jobId, key)),
+                JobRunController::markDuplicate);
+    }
+
+    /** A replayed trigger returns the same run, so it is a duplicate by definition. */
+    private static JsonNode markDuplicate(JsonNode body) {
+        if (body instanceof ObjectNode object) {
+            object.put("duplicate", true);
+        }
+        return body;
     }
 
     @GetMapping("/runs")

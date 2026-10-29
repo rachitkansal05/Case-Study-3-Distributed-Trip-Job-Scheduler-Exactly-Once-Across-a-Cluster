@@ -18,6 +18,7 @@ import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.function.Supplier;
+import java.util.function.UnaryOperator;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
@@ -63,6 +64,16 @@ public class IdempotencyService {
      */
     public ResponseEntity<?> execute(Caller caller, String key, String operation, Object request,
                                      Supplier<? extends ResponseEntity<?>> action) {
+        return execute(caller, key, operation, request, action, UnaryOperator.identity());
+    }
+
+    /**
+     * As {@link #execute(Caller, String, String, Object, Supplier)}, with {@code onReplay}
+     * adjusting a replayed body (e.g. a trigger replay reports {@code duplicate: true}).
+     */
+    public ResponseEntity<?> execute(Caller caller, String key, String operation, Object request,
+                                     Supplier<? extends ResponseEntity<?>> action,
+                                     UnaryOperator<JsonNode> onReplay) {
         if (key == null) {
             return action.get();
         }
@@ -76,7 +87,7 @@ public class IdempotencyService {
                     throw new ConflictException(ErrorCodes.IDEMPOTENCY_KEY_REUSED,
                             "Idempotency-Key was already used for a different request");
                 }
-                return replay(stored.get().responseJson());
+                return replay(stored.get().responseJson(), onReplay);
             }
             ResponseEntity<?> response = action.get();
             store.save(namespace, key, hash, serialise(response));
@@ -97,14 +108,14 @@ public class IdempotencyService {
         return write(stored);
     }
 
-    private ResponseEntity<JsonNode> replay(String json) {
+    private ResponseEntity<JsonNode> replay(String json, UnaryOperator<JsonNode> onReplay) {
         JsonNode stored = read(json);
         ResponseEntity.BodyBuilder builder = ResponseEntity.status(stored.path("status").asInt())
                 .header(REPLAYED_HEADER, "true");
         if (stored.hasNonNull("location")) {
             builder.header(HttpHeaders.LOCATION, stored.get("location").asText());
         }
-        return builder.body(stored.get("body"));
+        return builder.body(onReplay.apply(stored.get("body")));
     }
 
     // ------------------------------------------------------------------ request hash
