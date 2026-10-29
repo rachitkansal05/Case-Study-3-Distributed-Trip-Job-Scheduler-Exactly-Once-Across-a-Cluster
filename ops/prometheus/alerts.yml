@@ -1,0 +1,154 @@
+# Alert rules for every "Alert when" of PLAN.md section 14. Loaded by prometheus.yml (rule_files).
+#
+# Conventions (checked by OpsMetricReferencesTest / AlertRulesTest):
+#   - every rule has labels severity (critical | warning | info) and summary, and an annotation
+#     runbook_url pointing at the matching heading in docs/RUNBOOK.md;
+#   - only metric names listed in ops/metric-names.txt are used.
+#
+# Cluster-wide gauges (scheduler_runs, scheduler_queue_depth, scheduler_tenant_cap) are DB counts
+# that every node reports identically, so they are aggregated with max(), never sum().
+# Per-node values (scheduler_partitions_owned, counters, histograms) are summed.
+
+groups:
+  - name: scheduler-slo
+    rules:
+      - alert: SchedulerFireLagHigh
+        expr: |
+          histogram_quantile(0.99, sum by (le) (rate(scheduler_fire_lag_seconds_bucket[5m]))) > 2
+        for: 5m
+        labels:
+          severity: critical
+          summary: Fire-lag p99 above the 2 s SLO for 5 minutes
+        annotations:
+          description: "p99 of started_at - scheduled_at is {{ $value | humanizeDuration }} (SLO 2 s)."
+          runbook_url: docs/RUNBOOK.md#schedulerfirelaghigh
+
+      - alert: SchedulerDeadLettersIncreasing
+        expr: |
+          max(delta(scheduler_runs{state="dead_lettered"}[5m])) > 0
+        for: 0m
+        labels:
+          severity: warning
+          summary: New runs were dead-lettered in the last 5 minutes
+        annotations:
+          description: "{{ $value }} more dead-lettered runs than 5 minutes ago."
+          runbook_url: docs/RUNBOOK.md#schedulerdeadlettersincreasing
+
+      - alert: SchedulerQueueDepthGrowing
+        expr: |
+          max(deriv(scheduler_queue_depth[2m])) > 0 and max(scheduler_queue_depth) > 0
+        for: 2m
+        labels:
+          severity: warning
+          summary: Due-but-not-started runs have been growing for 2 minutes
+        annotations:
+          description: "Queue depth is rising by {{ $value | humanize }} runs/s."
+          runbook_url: docs/RUNBOOK.md#schedulerqueuedepthgrowing
+
+      - alert: SchedulerErrorRateHigh
+        expr: |
+          sum(rate(scheduler_run_outcome_total{outcome!="success"}[5m]))
+            / sum(rate(scheduler_run_outcome_total[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          summary: More than 5 % of finished attempts are failing
+        annotations:
+          description: "{{ $value | humanizePercentage }} of attempts ended retryable, permanent or timeout."
+          runbook_url: docs/RUNBOOK.md#schedulererrorratehigh
+
+  - name: scheduler-fencing
+    rules:
+      - alert: SchedulerStaleCommitsRejected
+        expr: |
+          sum(increase(scheduler_stale_commit_rejected_total[5m])) > 0
+        for: 0m
+        labels:
+          severity: warning
+          summary: Commits rejected by the fencing predicate (GC pause or network split)
+        annotations:
+          description: "{{ $value | humanize }} stale commits rejected in 5 minutes. Expected only during chaos tests."
+          runbook_url: docs/RUNBOOK.md#schedulerstalecommitsrejected
+
+      - alert: SchedulerLeaseLostSpike
+        expr: |
+          sum by (reason) (increase(scheduler_lease_lost_total[5m])) > 5
+        for: 0m
+        labels:
+          severity: warning
+          summary: Many runs lost their lease; FENCING_CONFLICT dead letters are likely
+        annotations:
+          description: "{{ $value | humanize }} lease losses with reason {{ $labels.reason }} in 5 minutes."
+          runbook_url: docs/RUNBOOK.md#schedulerleaselostspike
+
+      - alert: SchedulerLeaseRenewFailures
+        expr: |
+          sum by (node) (increase(scheduler_lease_renew_failures_total[2m])) > 0
+        for: 0m
+        labels:
+          severity: warning
+          summary: A node is failing to renew run leases
+        annotations:
+          description: "{{ $labels.node }} failed {{ $value | humanize }} renewals in 2 minutes."
+          runbook_url: docs/RUNBOOK.md#schedulerleaserenewfailures
+
+      - alert: SchedulerOrphanTakeoverSlow
+        expr: |
+          histogram_quantile(0.99, sum by (le) (rate(scheduler_orphan_takeover_time_seconds_bucket[10m]))) > 11.2
+        for: 0m
+        labels:
+          severity: critical
+          summary: Orphan takeover p99 above the 11.2 s bound
+        annotations:
+          description: "p99 time from lease expiry to restart is {{ $value | humanizeDuration }} (bound 11.2 s)."
+          runbook_url: docs/RUNBOOK.md#schedulerorphantakeoverslow
+
+  - name: scheduler-cluster
+    rules:
+      - alert: SchedulerPartitionsUnowned
+        expr: |
+          sum(scheduler_partitions_owned) != 128
+        for: 10s
+        labels:
+          severity: critical
+          summary: Partitions owned across the cluster is not 128
+        annotations:
+          description: "Nodes own {{ $value }} of 128 partitions; due runs in the others do not fire."
+          runbook_url: docs/RUNBOOK.md#schedulerpartitionsunowned
+
+      - alert: SchedulerClaimBatchSlow
+        expr: |
+          histogram_quantile(0.99, sum by (le) (rate(scheduler_claim_batch_seconds_bucket[5m]))) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          summary: Claim transaction p99 above 100 ms (database is the bottleneck)
+        annotations:
+          description: "Claim batch p99 is {{ $value | humanizeDuration }}."
+          runbook_url: docs/RUNBOOK.md#schedulerclaimbatchslow
+
+      - alert: SchedulerTenantCapDraining
+        # PLAN.md: "effective > configured for longer than the tenant's longest max run time".
+        # Prometheus does not know max run times (job.max_run_time), so 30m is a fixed bound that
+        # must stay above the longest maxRunTime any tenant uses. Raise it if a tenant runs longer jobs.
+        expr: |
+          max by (tenant) (scheduler_tenant_cap{kind="effective"})
+            > max by (tenant) (scheduler_tenant_cap{kind="configured"})
+        for: 30m
+        labels:
+          severity: warning
+          summary: A tenant's effective cap has stayed above its configured cap
+        annotations:
+          description: "Tenant {{ $labels.tenant }} still has {{ $value }} slot rows after a cap reduction."
+          runbook_url: docs/RUNBOOK.md#schedulertenantcapdraining
+
+      - alert: SchedulerTargetDown
+        expr: |
+          up{job=~"scheduler|notification-sink"} == 0
+        for: 30s
+        labels:
+          severity: critical
+          summary: A scheduler node or the notification sink is not being scraped
+        annotations:
+          description: "{{ $labels.job }} target {{ $labels.instance }} is down."
+          runbook_url: docs/RUNBOOK.md#schedulertargetdown

@@ -2,9 +2,17 @@ global:
   scrape_interval: 5s
   evaluation_interval: 5s
 
+# PLAN.md section 14 alert rules; mounted next to this file by docker-compose.yml.
+rule_files:
+  - /etc/prometheus/alerts.yml
+
 scrape_configs:
   - job_name: scheduler
     metrics_path: /actuator/prometheus
     static_configs:
       - targets: ["scheduler-1:8080", "scheduler-2:8080", "scheduler-3:8080"]
-# Alert rules (PLAN.md section 14) are added by the Observability team.
+
+  - job_name: notification-sink
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["notification-sink:8090"]
