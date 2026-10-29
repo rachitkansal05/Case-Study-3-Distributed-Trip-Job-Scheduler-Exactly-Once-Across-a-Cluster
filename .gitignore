@@ -1,0 +1,33 @@
+# Build output
+target/
+*.class
+*.log
+
+# Maven wrapper downloads
+.mvn/wrapper/maven-wrapper.jar
+.mvn/wrapper/*.zip
+
+# IDEs
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.project
+.classpath
+.factorypath
+out/
+bin/
+
+# Agent / worktree scratch
+.worktrees/
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local env overrides
+.env
+*.local.yml
