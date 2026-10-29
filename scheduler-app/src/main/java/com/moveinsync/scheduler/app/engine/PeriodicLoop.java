@@ -2,6 +2,8 @@ package com.moveinsync.scheduler.app.engine;
 
 import java.time.Duration;
 import java.util.Objects;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -10,6 +12,9 @@ import org.slf4j.MDC;
  * A loop on its own platform thread: {@code tick()}, then sleep {@link #nextDelay()}. A failing
  * tick is logged (never with payloads) and the loop continues; the DB being down must not kill the
  * node. Ticks are skipped while the node is frozen or dead.
+ *
+ * <p>{@link #wakeUp()} ends the current sleep early (at most one pending wake-up is kept, so a burst
+ * of wake-ups causes one extra tick, not many). Loops that never call it behave exactly as before.
  */
 abstract class PeriodicLoop {
 
@@ -22,6 +27,7 @@ abstract class PeriodicLoop {
     private volatile Thread thread;
     private volatile boolean running;
     private volatile long lastCompletedNanos = System.nanoTime();
+    private final Semaphore wakeups = new Semaphore(0);
     private int consecutiveFailures;
 
     PeriodicLoop(String name, String nodeId, Duration interval, NodeGate gate) {
@@ -41,6 +47,13 @@ abstract class PeriodicLoop {
 
     protected final Duration interval() {
         return interval;
+    }
+
+    /** Ends the current sleep early so the next tick runs now. Safe from any thread. */
+    protected final void wakeUp() {
+        if (wakeups.availablePermits() == 0) {
+            wakeups.release();
+        }
     }
 
     /** Monotonic time of the last tick that completed without an exception. */
@@ -113,7 +126,9 @@ abstract class PeriodicLoop {
             }
             try {
                 Duration d = gate.isRunning() ? nextDelay() : Duration.ofMillis(20);
-                Thread.sleep(Math.max(1, d.toMillis()));
+                if (wakeups.tryAcquire(Math.max(1, d.toMillis()), TimeUnit.MILLISECONDS)) {
+                    wakeups.drainPermits();
+                }
             } catch (InterruptedException e) {
                 if (!running) {
                     break;

@@ -26,6 +26,7 @@ final class Dispatcher {
     private final int workers;
     private final Consumer<Ticket> executor;
     private final ExecutorService pool;
+    private volatile Consumer<ClaimedRun> onFinished = run -> { };
     private int busy;
     private boolean accepting = true;
 
@@ -35,6 +36,14 @@ final class Dispatcher {
         this.drr = new DeficitRoundRobinDispatcher<>(t -> t.run().tenantId(), t -> t.run().priority(),
                 t -> t.run().recovered(), reservedForRecovery);
         this.pool = Executors.newThreadPerTaskExecutor(Thread.ofVirtual().name(nodeId + "-worker-", 0).factory());
+    }
+
+    /**
+     * Called on the worker thread after each run finished executing (its slot, if the commit
+     * succeeded, is already free). Used by the poller to refill the tenant's slot at once.
+     */
+    void onFinished(Consumer<ClaimedRun> listener) {
+        this.onFinished = Objects.requireNonNull(listener, "listener");
     }
 
     /** Enqueues committed claims and starts as many as the pool allows. */
@@ -82,11 +91,16 @@ final class Dispatcher {
                     try {
                         executor.accept(ticket);
                     } finally {
+                        boolean live;
                         synchronized (this) {
                             busy--;
+                            live = accepting;
                             notifyAll();
                         }
                         pump();
+                        if (live) {
+                            notifyFinished(ticket.run());
+                        }
                     }
                 });
             } catch (RuntimeException rejected) {
@@ -95,6 +109,14 @@ final class Dispatcher {
                 }
                 return;
             }
+        }
+    }
+
+    private void notifyFinished(ClaimedRun run) {
+        try {
+            onFinished.accept(run);
+        } catch (RuntimeException e) {
+            // a listener failure must never take a worker down; the next full poll claims anyway
         }
     }
 
