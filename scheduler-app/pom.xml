@@ -99,10 +99,43 @@
       <artifactId>embedded-postgres</artifactId>
       <scope>test</scope>
     </dependency>
+    <!-- Failover tests (FailoverFencingIT, StrictSyncIT): Docker-gated, skipped without Docker. -->
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>postgresql</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>
     <plugins>
+      <!--
+        A plain (non-repackaged) jar for the loadgen end-to-end tests and benchmark, which run
+        scheduler nodes in-process. It goes to target/plain/ so the Dockerfile's
+        target/scheduler-app-*.jar glob still matches only the executable jar.
+      -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>plain-jar</id>
+            <phase>package</phase>
+            <goals>
+              <goal>jar</goal>
+            </goals>
+            <configuration>
+              <classifier>plain</classifier>
+              <outputDirectory>${project.build.directory}/plain</outputDirectory>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
       <plugin>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-maven-plugin</artifactId>

@@ -41,4 +41,13 @@ public interface ClaimObserver {
     /** An expired holder was reaped (lease lost by its node). */
     default void onReaped(long runId, boolean deadLettered) {
     }
+
+    /**
+     * A run was dead-lettered (committed): by a failing attempt's fenced commit, or by a reap at the
+     * lease-lost limit ({@code FENCING_CONFLICT}).
+     *
+     * @param errorCode the stable error code stored in {@code dead_letter.error_code}
+     */
+    default void onDeadLettered(long runId, String errorCode) {
+    }
 }

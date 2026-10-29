@@ -21,7 +21,11 @@ import com.moveinsync.scheduler.core.policy.RetryableJobException;
 import com.moveinsync.scheduler.core.ports.ClaimProtocol;
 import com.moveinsync.scheduler.core.ports.EffectSink;
 import com.moveinsync.scheduler.core.ports.SchedulerClock;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
+import java.util.HexFormat;
 import java.util.Objects;
 import java.util.UUID;
 import org.slf4j.Logger;
@@ -31,7 +35,9 @@ import org.slf4j.MDC;
 /**
  * Executes one claimed run on a worker thread: self-fence, handler, fenced commit, and outcome
  * classification (plan sections 07 and 09). MDC carries {@code nodeId, runId, jobId, tenantId,
- * fencingToken, attempt} while the run executes; payloads are never logged.
+ * fencingToken, attempt, idemKeyHash} while the run executes ({@code idemKeyHash} is the first 16
+ * hex characters of the SHA-256 of the run's idempotency key, the same form the sink logs; the key
+ * itself is never logged); payloads are never logged.
  *
  * <ul>
  *   <li>Success → {@code commitSuccess}. A rejected commit (0 rows) means the lease was lost:
@@ -93,6 +99,7 @@ final class RunExecutor {
         MDC.put("tenantId", run.tenantId().value());
         MDC.put("fencingToken", run.token().toHeader());
         MDC.put("attempt", String.valueOf(run.attempt()));
+        MDC.put("idemKeyHash", idemKeyHash(run.idemKey()));
         ActiveRun active = new ActiveRun(run,
                 LeaseClock.startedAt(clock, ticket.claimNanos(), runLease, selfFenceMargin), Thread.currentThread());
         int maxAttempts = 1;
@@ -177,6 +184,16 @@ final class RunExecutor {
                 .orElseThrow(() -> new PermanentJobException("JOB_NOT_FOUND", "job definition missing"));
         specs.put(key, spec);
         return spec;
+    }
+
+    /** First 16 hex characters of SHA-256(key): correlates with the sink's log without the raw key. */
+    static String idemKeyHash(String idemKey) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(idemKey.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest, 0, 8);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 not available", e);
+        }
     }
 
     private EffectSink sinkFor(ClaimedRun run) {

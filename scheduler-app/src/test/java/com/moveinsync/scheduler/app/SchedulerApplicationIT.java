@@ -49,7 +49,7 @@ class SchedulerApplicationIT extends AbstractEmbeddedPostgresIT {
         assertThat(props.membership().heartbeatInterval()).isEqualTo(Duration.ofSeconds(2));
         assertThat(props.membership().deadAfter()).isEqualTo(Duration.ofSeconds(6));
         assertThat(props.claim().pollInterval()).isEqualTo(Duration.ofMillis(200));
-        assertThat(props.orphanSweep().interval()).isEqualTo(Duration.ofSeconds(1));
+        assertThat(props.orphanSweep().interval()).isEqualTo(Duration.ofMillis(500));
         assertThat(props.workers().count()).isEqualTo(64);
         assertThat(props.workers().reservedForRecovery()).isEqualTo(1);
         assertThat(props.selfFenceMargin()).isEqualTo(Duration.ofSeconds(2));

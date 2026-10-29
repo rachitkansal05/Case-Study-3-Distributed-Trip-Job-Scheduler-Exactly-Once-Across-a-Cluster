@@ -11,7 +11,17 @@
 
   <artifactId>loadgen</artifactId>
   <name>loadgen</name>
-  <description>Plain-Java load generator and fire-lag reporter (HdrHistogram). Owned by the Reliability team.</description>
+  <description>
+    Load generator and fire-lag reporter (HdrHistogram), owned by the Reliability team.
+    Main code is plain Java (drives a running compose stack over HTTP). Test scope hosts the
+    end-to-end failure tests and the in-process benchmark: real scheduler nodes in this JVM and the
+    real notification-sink jar in a separate JVM, both on embedded PostgreSQL.
+  </description>
+
+  <properties>
+    <!-- The real sink runs from its executable jar; see SinkProcess. -->
+    <sink.jar>${project.basedir}/../notification-sink/target/notification-sink-${project.version}.jar</sink.jar>
+  </properties>
 
   <dependencies>
     <dependency>
@@ -19,13 +29,57 @@
       <artifactId>HdrHistogram</artifactId>
     </dependency>
     <dependency>
-      <groupId>org.junit.jupiter</groupId>
-      <artifactId>junit-jupiter</artifactId>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.postgresql</groupId>
+      <artifactId>postgresql</artifactId>
+    </dependency>
+
+    <!--
+      Scheduler classes for the in-process nodes. scheduler-app's main artifact is the Spring Boot
+      fat jar (classes under BOOT-INF/), which cannot be a dependency, so scheduler-app also builds a
+      plain jar with classifier "plain" into target/plain/ (outside the glob its Dockerfile copies).
+    -->
+    <dependency>
+      <groupId>com.moveinsync.scheduler</groupId>
+      <artifactId>scheduler-app</artifactId>
+      <version>${project.version}</version>
+      <classifier>plain</classifier>
+      <scope>test</scope>
+    </dependency>
+    <!--
+      Build order only: the sink must be packaged before these tests start it from its jar. Nothing
+      of it lands on the classpath (type pom, all transitive dependencies excluded).
+    -->
+    <dependency>
+      <groupId>com.moveinsync.scheduler</groupId>
+      <artifactId>notification-sink</artifactId>
+      <version>${project.version}</version>
+      <type>pom</type>
+      <scope>test</scope>
+      <exclusions>
+        <exclusion>
+          <groupId>*</groupId>
+          <artifactId>*</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+
+    <dependency>
+      <groupId>io.zonky.test</groupId>
+      <artifactId>embedded-postgres</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.assertj</groupId>
-      <artifactId>assertj-core</artifactId>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.awaitility</groupId>
+      <artifactId>awaitility</artifactId>
       <scope>test</scope>
     </dependency>
   </dependencies>
@@ -39,10 +93,66 @@
           <archive>
             <manifest>
               <mainClass>com.moveinsync.scheduler.loadgen.LoadGenMain</mainClass>
+              <addClasspath>true</addClasspath>
+              <classpathPrefix>lib/</classpathPrefix>
             </manifest>
           </archive>
         </configuration>
       </plugin>
+      <!-- Compose mode: java -jar loadgen/target/loadgen-<version>.jar finds its runtime jars in target/lib. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-dependency-plugin</artifactId>
+        <version>3.7.0</version>
+        <executions>
+          <execution>
+            <id>copy-runtime-dependencies</id>
+            <phase>package</phase>
+            <goals>
+              <goal>copy-dependencies</goal>
+            </goals>
+            <configuration>
+              <includeScope>runtime</includeScope>
+              <outputDirectory>${project.build.directory}/lib</outputDirectory>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+        <configuration>
+          <systemPropertyVariables>
+            <sink.jar>${sink.jar}</sink.jar>
+          </systemPropertyVariables>
+        </configuration>
+      </plugin>
     </plugins>
   </build>
+
+  <profiles>
+    <!--
+      In-process benchmark (InProcessBench, test scope; its name does not match *IT, so a normal
+      verify never runs it). The profile only sizes the forked JVM; -Dit.test selects the class
+      and keeps the upstream modules' ITs from running. bench.* -D properties reach the fork as
+      system properties.
+
+        ./mvnw -B -pl loadgen -am verify -Pbench -Dtest=none -Dsurefire.failIfNoSpecifiedTests=false \
+          -Dit.test=InProcessBench -Dfailsafe.failIfNoSpecifiedTests=false -Dbench.scenario=spread
+    -->
+    <profile>
+      <id>bench</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-failsafe-plugin</artifactId>
+            <configuration>
+              <argLine>-Xmx4g -Xms1g -XX:+UseG1GC</argLine>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 </project>

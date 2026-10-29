@@ -88,6 +88,7 @@ public final class SchedulerNode {
         this.dispatcher = new Dispatcher(id, settings.workers(), settings.reservedForRecovery(), executor::execute);
         this.poller = new Poller(id, settings.pollInterval(), gate, protocol, queries, partitionLoop::owned, dispatcher,
                 clock);
+        this.dispatcher.onFinished(run -> poller.slotFreed(run.tenantId()));
         this.orphanSweep = new OrphanSweep(id, settings.orphanSweepInterval(), gate, protocol, dispatcher, clock);
         this.compactor = new SlotCompactor(id, settings.compactorInterval(), gate, new JdbcSlotCompaction(dataSource));
         Materializer materializer = new Materializer(dataSource, partitionLoop::owned, settings.materializerHorizon(),

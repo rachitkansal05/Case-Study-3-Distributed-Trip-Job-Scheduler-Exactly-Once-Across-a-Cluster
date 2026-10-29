@@ -197,5 +197,7 @@ class RetryToDeadLetterIT {
         assertThat(row.get("error_code")).isEqualTo(code);
         assertThat(((Number) row.get("attempts")).intValue()).isEqualTo(attempts);
         assertThat(row.get("replayed_at")).isNull();
+        assertThat(node.metrics().deadLetterCount(code)).as("scheduler_dead_letters_total{error_code=%s}", code)
+                .isEqualTo(1.0);
     }
 }

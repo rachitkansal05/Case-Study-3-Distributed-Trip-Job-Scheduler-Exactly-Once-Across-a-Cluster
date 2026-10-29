@@ -1,0 +1,17 @@
+# Override for the chaos scripts: adds the `dev` Spring profile so POST /dev/token exists
+# (DevTokenController is @Profile("dev"); docker-compose.yml sets only `json`).
+#
+#   docker compose -f docker-compose.yml -f chaos/docker-compose.chaos.yml up -d --build
+#
+# Compose merges `environment` maps per key, so only SPRING_PROFILES_ACTIVE changes.
+# DEV ONLY: the dev profile mints tokens for any tenant and role without authentication.
+services:
+  scheduler-1:
+    environment:
+      SPRING_PROFILES_ACTIVE: json,dev
+  scheduler-2:
+    environment:
+      SPRING_PROFILES_ACTIVE: json,dev
+  scheduler-3:
+    environment:
+      SPRING_PROFILES_ACTIVE: json,dev

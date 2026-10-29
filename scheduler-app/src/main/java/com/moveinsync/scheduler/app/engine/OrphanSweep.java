@@ -8,9 +8,10 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * Orphan sweep (plan section 06.6): every 1 s, take over expired RUNNING runs in <b>any</b>
- * partition, so takeover never waits for partition ownership. Restarted runs go to the recovered
- * lane and may use the reserved worker. Takeover bound: 10 s lease + 1 s sweep + claim ≈ 11.2 s.
+ * Orphan sweep (plan section 06.6): every 500 ms (default), take over expired RUNNING runs in
+ * <b>any</b> partition, so takeover never waits for partition ownership. Restarted runs go to the
+ * recovered lane and may use the reserved worker. Takeover bound: 10 s lease + 0.5 s sweep + about
+ * 0.2 s claim = 10.7 s, inside the documented 11.2 s.
  */
 final class OrphanSweep extends PeriodicLoop {
 

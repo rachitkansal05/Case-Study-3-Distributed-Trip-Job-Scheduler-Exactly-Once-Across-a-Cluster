@@ -38,9 +38,13 @@ class LeaseResurrectionIT {
     }
 
     private static JdbcClaimProtocol protocol(int leaseLostLimit, Duration lease) {
+        return protocol(leaseLostLimit, lease, ClaimObserver.NONE);
+    }
+
+    private static JdbcClaimProtocol protocol(int leaseLostLimit, Duration lease, ClaimObserver observer) {
         return new JdbcClaimProtocol(db.admin(), lease,
                 new RetryDecider(ExponentialFullJitterBackoff.withDefaults(), new FailureClassifier(), leaseLostLimit),
-                ClaimObserver.NONE);
+                observer);
     }
 
     @Test
@@ -87,7 +91,10 @@ class LeaseResurrectionIT {
 
     @Test
     void leaseLostLimitDeadLettersWithFencingConflict() {
-        JdbcClaimProtocol protocol = protocol(3, Duration.ofSeconds(10));
+        com.moveinsync.scheduler.app.engine.EngineMetrics metrics = new com.moveinsync.scheduler.app.engine.EngineMetrics(
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry(), "res-l-node");
+        JdbcClaimProtocol protocol = protocol(3, Duration.ofSeconds(10), metrics);
+        assertThat(metrics.deadLetterCount("FENCING_CONFLICT")).as("exported before the first event").isZero();
         fx.tenant("res-l", 1);
         UUID job = fx.job("res-l").insert();
         long runId = fx.dueRuns(job, 1).get(0);
@@ -107,5 +114,6 @@ class LeaseResurrectionIT {
                 + "AND last_error LIKE 'FENCING_CONFLICT: %'", runId)).isEqualTo(1);
         assertThat(fx.count("SELECT count(*) FROM dead_letter WHERE run_id = ? AND error_code = 'FENCING_CONFLICT'",
                 runId)).isEqualTo(1);
+        assertThat(metrics.deadLetterCount("FENCING_CONFLICT")).isEqualTo(1.0);
     }
 }
