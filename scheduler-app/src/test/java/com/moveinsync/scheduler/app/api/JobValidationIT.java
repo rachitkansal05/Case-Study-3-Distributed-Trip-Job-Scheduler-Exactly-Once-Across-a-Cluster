@@ -102,7 +102,7 @@ class JobValidationIT extends ApiIntegrationTest {
                 new Case("payload array", false, b -> b.putArray("payload").add("arr-elem-zz"), "VALIDATION_FAILED",
                         "payload", "arr-elem-zz"),
                 new Case("payload string", false, b -> b.put("payload", "phone +91 98450 12345"),
-                        "VALIDATION_FAILED", "payload", "98450"),
+                        "VALIDATION_FAILED", "payload", "98450 12345"),
                 new Case("payload number", false, b -> b.put("payload", 42), "VALIDATION_FAILED", "payload", null),
                 new Case("payload over 64 KiB", false, b -> b.putObject("payload").put("blob", big),
                         "VALIDATION_FAILED", "payload", "xxxxxxxxxx"),
@@ -130,7 +130,8 @@ class JobValidationIT extends ApiIntegrationTest {
         if (c.echo() != null) {
             assertThat(r.raw()).doesNotContain(c.echo());
         }
-        assertThat(r.raw()).doesNotContain("98450").doesNotContain("Exception").doesNotContain("at com.");
+        // The space keeps this from matching digits inside a random hex traceId.
+        assertThat(r.raw()).doesNotContain("98450 12345").doesNotContain("Exception").doesNotContain("at com.");
         assertThat(jdbc.sql("SELECT count(*) FROM job WHERE tenant_id = ?").param(tenant).query(Long.class).single())
                 .isZero();
     }
