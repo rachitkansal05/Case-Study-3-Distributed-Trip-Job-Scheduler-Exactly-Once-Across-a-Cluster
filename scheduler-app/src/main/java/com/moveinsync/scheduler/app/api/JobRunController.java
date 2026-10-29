@@ -1,0 +1,49 @@
+package com.moveinsync.scheduler.app.api;
+
+import com.moveinsync.scheduler.app.api.dto.PageView;
+import com.moveinsync.scheduler.app.api.dto.RunView;
+import com.moveinsync.scheduler.app.api.dto.TriggerView;
+import com.moveinsync.scheduler.app.security.Caller;
+import com.moveinsync.scheduler.app.service.RunService;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import java.util.UUID;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+/** Manual trigger and run history of a job (ADMIN of the tenant, or OPERATOR). */
+@RestController
+@RequestMapping("/api/v1/jobs/{jobId}")
+public class JobRunController {
+
+    private final RunService runs;
+
+    public JobRunController(RunService runs) {
+        this.runs = runs;
+    }
+
+    /**
+     * {@code POST /api/v1/jobs/{id}/trigger}: 202 with the run. The {@code Idempotency-Key}
+     * header is required; repeating it returns the same run ({@code duplicate = true}).
+     */
+    @PostMapping("/trigger")
+    public ResponseEntity<TriggerView> trigger(Caller caller, @PathVariable UUID jobId,
+                                               @RequestHeader(IdempotencyKeys.HEADER) String idempotencyKey) {
+        IdempotencyKeys.requireValid(idempotencyKey);
+        return ResponseEntity.status(HttpStatus.ACCEPTED).body(runs.trigger(caller, jobId, idempotencyKey));
+    }
+
+    @GetMapping("/runs")
+    public PageView<RunView> runs(Caller caller, @PathVariable UUID jobId,
+                                  @RequestParam(defaultValue = "0") @Min(0) @Max(10_000) int page,
+                                  @RequestParam(defaultValue = "50") @Min(1) @Max(200) int size) {
+        return runs.history(caller, jobId, page, size);
+    }
+}
