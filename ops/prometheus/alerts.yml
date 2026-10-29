@@ -81,6 +81,17 @@ groups:
           description: "{{ $value | humanize }} lease losses with reason {{ $labels.reason }} in 5 minutes."
           runbook_url: docs/RUNBOOK.md#schedulerleaselostspike
 
+      - alert: SchedulerFencingConflictDeadLetters
+        expr: |
+          sum(increase(scheduler_dead_letters_total{error_code="FENCING_CONFLICT"}[15m])) > 0
+        for: 0m
+        labels:
+          severity: critical
+          summary: A run was dead-lettered after 20 lost leases (FENCING_CONFLICT)
+        annotations:
+          description: "{{ $value | humanize }} FENCING_CONFLICT dead letters in 15 minutes. Repeated takeovers of one run point to a stalled node or a fencing bug."
+          runbook_url: docs/RUNBOOK.md#schedulerfencingconflictdeadletters
+
       - alert: SchedulerLeaseRenewFailures
         expr: |
           sum by (node) (increase(scheduler_lease_renew_failures_total[2m])) > 0
