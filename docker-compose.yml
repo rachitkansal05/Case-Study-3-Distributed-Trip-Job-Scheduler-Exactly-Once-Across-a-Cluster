@@ -44,6 +44,10 @@ x-scheduler: &scheduler
 services:
   postgres:
     image: postgres:16
+    # A node frozen (docker pause) inside a claim or commit transaction would hold its row locks
+    # until unpaused and block takeover. Those transactions take milliseconds, so end any session
+    # idle in a transaction for 5 s; the frozen node's next write fails and fencing covers the rest.
+    command: ["postgres", "-c", "idle_in_transaction_session_timeout=5s"]
     environment:
       POSTGRES_DB: scheduler
       POSTGRES_USER: scheduler
