@@ -5,8 +5,9 @@
       replace %m and %wEx in Spring Boot's default console pattern;
     - JSON (profile "json", set in docker-compose): LogstashEncoder with a
       MaskingJsonGeneratorDecorator + PiiValueMasker masking every string value (message, MDC, stack trace).
-  MDC fields traceId and tenantId are set per request by a servlet filter (engine loops add
-  nodeId, runId, jobId, fencingToken, attempt, idemKeyHash); JSON output includes all MDC fields.
+  MDC fields traceId and tenantId are set per request by servlet filters; while a run executes the
+  engine sets nodeId, runId, jobId, tenantId, fencingToken and attempt (loops set nodeId). JSON
+  output includes all MDC fields; LoggingIT checks them and the masking end to end.
   Emails, coordinates and phone numbers are masked; payloads are never logged.
 -->
 <configuration>

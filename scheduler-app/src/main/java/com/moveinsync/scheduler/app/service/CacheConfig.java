@@ -13,6 +13,13 @@ import org.springframework.context.annotation.Configuration;
  * Caffeine caches with the bounds of PLAN.md section 14. Only these two named caches exist (no
  * dynamic creation), so nothing else can be cached by accident. <b>Caps and the pause flag are
  * never cached</b>: the cap is the slot rows and the claim reads {@code tenant.paused} directly.
+ *
+ * <p>Metrics: both caches are registered on the manager at startup and {@code recordStats()} is
+ * on, so Spring Boot's cache metrics auto-configuration binds them to Micrometer
+ * ({@code CaffeineCacheMeterBinderProvider}) as {@code cache_gets_total{cache,result}},
+ * {@code cache_puts_total}, {@code cache_evictions_total} and {@code cache_size}, tagged
+ * {@code cache="tenant-settings"} / {@code "next-fire-times"}. Keep {@code recordStats()}: without
+ * it the hit and miss counters stay at 0. {@code MetricsIT} checks the export.
  */
 @Configuration(proxyBeanMethods = false)
 @EnableCaching
