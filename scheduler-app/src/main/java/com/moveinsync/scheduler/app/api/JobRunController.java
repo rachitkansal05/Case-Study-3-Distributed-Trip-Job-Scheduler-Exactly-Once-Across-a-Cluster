@@ -2,8 +2,8 @@ package com.moveinsync.scheduler.app.api;
 
 import com.moveinsync.scheduler.app.api.dto.PageView;
 import com.moveinsync.scheduler.app.api.dto.RunView;
-import com.moveinsync.scheduler.app.api.dto.TriggerView;
 import com.moveinsync.scheduler.app.security.Caller;
+import com.moveinsync.scheduler.app.service.IdempotencyService;
 import com.moveinsync.scheduler.app.service.RunService;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
@@ -24,9 +24,11 @@ import org.springframework.web.bind.annotation.RestController;
 public class JobRunController {
 
     private final RunService runs;
+    private final IdempotencyService idempotency;
 
-    public JobRunController(RunService runs) {
+    public JobRunController(RunService runs, IdempotencyService idempotency) {
         this.runs = runs;
+        this.idempotency = idempotency;
     }
 
     /**
@@ -34,10 +36,11 @@ public class JobRunController {
      * header is required; repeating it returns the same run ({@code duplicate = true}).
      */
     @PostMapping("/trigger")
-    public ResponseEntity<TriggerView> trigger(Caller caller, @PathVariable UUID jobId,
-                                               @RequestHeader(IdempotencyKeys.HEADER) String idempotencyKey) {
-        IdempotencyKeys.requireValid(idempotencyKey);
-        return ResponseEntity.status(HttpStatus.ACCEPTED).body(runs.trigger(caller, jobId, idempotencyKey));
+    public ResponseEntity<?> trigger(Caller caller, @PathVariable UUID jobId,
+                                     @RequestHeader(IdempotencyKeys.HEADER) String idempotencyKey) {
+        String key = IdempotencyKeys.requireValid(idempotencyKey);
+        return idempotency.execute(caller, key, "POST /api/v1/jobs/" + jobId + "/trigger", null,
+                () -> ResponseEntity.status(HttpStatus.ACCEPTED).body(runs.trigger(caller, jobId, key)));
     }
 
     @GetMapping("/runs")

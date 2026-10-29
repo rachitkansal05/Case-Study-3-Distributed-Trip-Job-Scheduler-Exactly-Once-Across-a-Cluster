@@ -12,6 +12,11 @@ public final class IdempotencyKeys {
     private IdempotencyKeys() {
     }
 
+    /** An optional header: null stays null, anything else must be valid. */
+    public static String optional(String key) {
+        return key == null ? null : requireValid(key);
+    }
+
     /** @throws ValidationException naming the header (never echoing its value) when malformed */
     public static String requireValid(String key) {
         if (key == null || !VALID.matcher(key).matches()) {
