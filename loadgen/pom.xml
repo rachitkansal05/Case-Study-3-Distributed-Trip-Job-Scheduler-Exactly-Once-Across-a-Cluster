@@ -93,9 +93,30 @@
           <archive>
             <manifest>
               <mainClass>com.moveinsync.scheduler.loadgen.LoadGenMain</mainClass>
+              <addClasspath>true</addClasspath>
+              <classpathPrefix>lib/</classpathPrefix>
             </manifest>
           </archive>
         </configuration>
+      </plugin>
+      <!-- Compose mode: java -jar loadgen/target/loadgen-<version>.jar finds its runtime jars in target/lib. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-dependency-plugin</artifactId>
+        <version>3.7.0</version>
+        <executions>
+          <execution>
+            <id>copy-runtime-dependencies</id>
+            <phase>package</phase>
+            <goals>
+              <goal>copy-dependencies</goal>
+            </goals>
+            <configuration>
+              <includeScope>runtime</includeScope>
+              <outputDirectory>${project.build.directory}/lib</outputDirectory>
+            </configuration>
+          </execution>
+        </executions>
       </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
@@ -108,4 +129,30 @@
       </plugin>
     </plugins>
   </build>
+
+  <profiles>
+    <!--
+      In-process benchmark (InProcessBench, test scope; its name does not match *IT, so a normal
+      verify never runs it). The profile only sizes the forked JVM; -Dit.test selects the class
+      and keeps the upstream modules' ITs from running. bench.* -D properties reach the fork as
+      system properties.
+
+        ./mvnw -B -pl loadgen -am verify -Pbench -Dtest=none -Dsurefire.failIfNoSpecifiedTests=false \
+          -Dit.test=InProcessBench -Dfailsafe.failIfNoSpecifiedTests=false -Dbench.scenario=spread
+    -->
+    <profile>
+      <id>bench</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-failsafe-plugin</artifactId>
+            <configuration>
+              <argLine>-Xmx4g -Xms1g -XX:+UseG1GC</argLine>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 </project>

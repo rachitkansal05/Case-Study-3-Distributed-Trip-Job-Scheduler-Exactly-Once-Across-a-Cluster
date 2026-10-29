@@ -60,11 +60,18 @@ public final class EmbeddedPg implements AutoCloseable {
         return local;
     }
 
-    /** A dedicated server with the given settings on top of max_connections=400 and timezone UTC. */
+    /**
+     * A dedicated server with the given settings on top of max_connections=400, timezone UTC and
+     * fsync, synchronous_commit and full_page_writes explicitly on (the PostgreSQL defaults).
+     */
     public static EmbeddedPg durable(Map<String, String> extra) {
         Map<String, String> s = new LinkedHashMap<>();
         s.put("max_connections", "400");
         s.put("timezone", "UTC");
+        // zonky's builder turns these off by default; a benchmark must pay for real WAL flushes
+        s.put("fsync", "on");
+        s.put("synchronous_commit", "on");
+        s.put("full_page_writes", "on");
         s.putAll(extra);
         return new EmbeddedPg(s);
     }
