@@ -2,6 +2,7 @@ package com.moveinsync.scheduler.sink.web;
 
 import java.util.List;
 import java.util.Map;
+import com.moveinsync.scheduler.sink.service.InjectedFaultException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessResourceFailureException;
@@ -43,6 +44,12 @@ public class ApiExceptionHandler {
             body.setProperty("outcome", "STALE_TOKEN");
         }
         return respond(body);
+    }
+
+    @ExceptionHandler(InjectedFaultException.class)
+    ResponseEntity<ProblemDetail> injectedFault(InjectedFaultException e) {
+        return respond(problem(ProblemCode.INJECTED_FAULT, HttpStatus.valueOf(e.status()),
+                "Failure injected by the sink's fault settings; nothing was delivered."));
     }
 
     @ExceptionHandler(HttpMessageNotReadableException.class)
