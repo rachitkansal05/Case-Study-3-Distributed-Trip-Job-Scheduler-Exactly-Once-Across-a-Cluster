@@ -6,7 +6,13 @@
 #   toxiproxy          8474   fault injection API; every node reaches Postgres and the sink through
 #                             its own proxy, so one node can be cut off without touching the others
 #   prometheus         9090
-#   grafana            3000   admin / admin (dev only)
+#   grafana            3000   admin / admin (dev only); anonymous users get read-only Viewer access
+#
+# Every service has a healthcheck, and depends_on waits for service_healthy, so the nodes start only
+# after Postgres and the sink are ready (the node's startup epoch guard calls the sink). The JVM
+# images ship without curl, so HTTP healthchecks use bash's /dev/tcp against the actuator health
+# probes. Logs are JSON lines (profile "json") with PII masked; scheduler nodes also run the "dev"
+# profile so POST /dev/token works for the demo and the chaos scripts. Never use "dev" in production.
 #
 # All credentials below are obviously-dev defaults. Override them for anything but a laptop.
 
@@ -20,11 +26,17 @@ x-scheduler: &scheduler
     postgres:
       condition: service_healthy
     toxiproxy:
-      condition: service_started
+      condition: service_healthy
     notification-sink:
-      condition: service_started
+      condition: service_healthy
+  healthcheck:
+    test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /actuator/health/readiness HTTP/1.0\r\nHost: localhost\r\n\r\n' >&3 && grep -q '\"UP\"' <&3"]
+    interval: 5s
+    timeout: 3s
+    retries: 30
+    start_period: 30s
   environment: &scheduler-env
-    SPRING_PROFILES_ACTIVE: json
+    SPRING_PROFILES_ACTIVE: json,dev
     SPRING_DATASOURCE_USERNAME: scheduler
     SPRING_DATASOURCE_PASSWORD: scheduler
     SCHEDULER_JWT_HMAC_SECRET: ${SCHEDULER_JWT_HMAC_SECRET:-dev-only-insecure-hmac-key-do-not-use-in-prod-0123456789}
@@ -53,6 +65,11 @@ services:
       - ./ops/toxiproxy/toxiproxy.json:/config/toxiproxy.json:ro
     ports:
       - "8474:8474"
+    healthcheck:
+      test: ["CMD", "/toxiproxy-cli", "list"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
 
   notification-sink:
     build:
@@ -67,8 +84,17 @@ services:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/scheduler
       SPRING_DATASOURCE_USERNAME: scheduler
       SPRING_DATASOURCE_PASSWORD: scheduler
+      SPRING_PROFILES_ACTIVE: json
+      # Required as X-Admin-Token on /admin/** (fault injection). Dev default only.
+      SINK_ADMIN_TOKEN: ${SINK_ADMIN_TOKEN:-dev-only-sink-admin-token}
     ports:
       - "8090:8090"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8090 && printf 'GET /actuator/health/readiness HTTP/1.0\r\nHost: localhost\r\n\r\n' >&3 && grep -q '\"UP\"' <&3"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
 
   scheduler-1:
     <<: *scheduler
@@ -105,25 +131,48 @@ services:
     command: ["--config.file=/etc/prometheus/prometheus.yml"]
     volumes:
       - ./ops/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./ops/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
     ports:
       - "9090:9090"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:9090/-/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    # service_started, not service_healthy: Prometheus must come up even when a node is broken,
+    # because that is exactly when on-call needs it (SchedulerTargetDown).
     depends_on:
-      - scheduler-1
-      - scheduler-2
-      - scheduler-3
+      scheduler-1:
+        condition: service_started
+      scheduler-2:
+        condition: service_started
+      scheduler-3:
+        condition: service_started
+      notification-sink:
+        condition: service_started
 
   grafana:
     image: grafana/grafana:11.1.0
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
+      # Demo convenience: open the dashboard without logging in (read-only).
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/scheduler.json
     volumes:
       - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./ops/grafana/dashboards:/var/lib/grafana/dashboards:ro
     ports:
       - "3000:3000"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:3000/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
     depends_on:
-      - prometheus
+      prometheus:
+        condition: service_healthy
 
 volumes:
   pgdata:
