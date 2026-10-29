@@ -1,6 +1,8 @@
 package com.moveinsync.scheduler.sink.support;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 import org.springframework.http.HttpMethod;
@@ -18,6 +20,7 @@ public final class SinkTestClient {
     /** Dev default of {@code sink.admin.token}. */
     public static final String ADMIN_TOKEN = "dev-only-sink-admin-token";
 
+    private static final ObjectMapper JSON = new ObjectMapper();
     private static final AtomicLong RUN_IDS = new AtomicLong(System.currentTimeMillis() * 1_000L);
 
     private final RestClient http;
@@ -68,6 +71,29 @@ public final class SinkTestClient {
                 .body(rawBody)
                 .retrieve()
                 .toEntity(JsonNode.class);
+    }
+
+    /** POST with an explicit {@code Content-Type} and optional {@code Accept}; a non-JSON body reads as null. */
+    public ResponseEntity<JsonNode> raw(String contentType, String accept, String key, String token, String rawBody) {
+        ResponseEntity<String> r = http.post().uri("/api/v1/deliveries")
+                .contentType(MediaType.parseMediaType(contentType))
+                .headers(h -> {
+                    if (accept != null) {
+                        h.set("Accept", accept);
+                    }
+                    h.set("Idempotency-Key", key);
+                    h.set("Fencing-Token", token);
+                })
+                .body(rawBody)
+                .retrieve()
+                .toEntity(String.class);
+        JsonNode body;
+        try {
+            body = r.getBody() == null ? null : JSON.readTree(r.getBody());
+        } catch (JsonProcessingException e) {
+            body = null;
+        }
+        return new ResponseEntity<>(body, r.getHeaders(), r.getStatusCode());
     }
 
     public ResponseEntity<JsonNode> get(String path) {

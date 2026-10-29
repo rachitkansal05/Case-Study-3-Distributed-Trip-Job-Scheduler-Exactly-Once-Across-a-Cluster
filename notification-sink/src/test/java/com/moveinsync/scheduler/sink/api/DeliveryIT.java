@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.moveinsync.scheduler.sink.support.AbstractEmbeddedPostgresIT;
 import com.moveinsync.scheduler.sink.support.SinkTestClient;
+import java.time.Instant;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -42,7 +43,8 @@ class DeliveryIT extends AbstractEmbeddedPostgresIT {
         assertThat(first.getBody().get("outcome").asText()).isEqualTo("DELIVERED");
         assertThat(first.getBody().get("runId").asLong()).isEqualTo(run);
         assertThat(first.getBody().get("fencingToken").asText()).isEqualTo("7.41");
-        assertThat(first.getBody().get("deliveredAt").asText()).isNotBlank();
+        assertThat(first.getBody().get("deliveredAt").isTextual()).isTrue();
+        assertThat(Instant.parse(first.getBody().get("deliveredAt").asText())).isBeforeOrEqualTo(Instant.now());
 
         ResponseEntity<JsonNode> again = sink.deliver(run, key, "7.41");
         assertThat(again.getStatusCode()).isEqualTo(HttpStatus.OK);
@@ -202,6 +204,21 @@ class DeliveryIT extends AbstractEmbeddedPostgresIT {
             assertThat(r.getBody().has("trace")).isFalse();
             assertThat(r.getBody().has("exception")).isFalse();
         }
+    }
+
+    @Test
+    void wrongContentTypeIs415AndWrongAcceptIs406() {
+        String key = SinkTestClient.newKey("media");
+        long run = SinkTestClient.newRunId();
+        String body = "{\"runId\":" + run + ",\"channel\":\"SMS\",\"payload\":{}}";
+
+        ResponseEntity<JsonNode> r = sink.raw("text/plain", null, key, "1.1", body);
+        assertProblem(r, 415, "UNSUPPORTED_MEDIA_TYPE");
+        assertThat(sink.raw("text/plain", "text/plain", key, "1.1", body).getStatusCode().value()).isEqualTo(415);
+        assertThat(sink.raw("application/json", "text/plain", key, "1.1", body).getStatusCode().value())
+                .isEqualTo(406);
+        assertThat(sink.raw("application/json;charset=UTF-8", null, key, "1.1", body).getStatusCode())
+                .isEqualTo(HttpStatus.CREATED);
     }
 
     static void assertProblem(ResponseEntity<JsonNode> r, int status, String code) {
