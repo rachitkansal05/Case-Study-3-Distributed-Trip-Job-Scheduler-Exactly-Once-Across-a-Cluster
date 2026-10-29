@@ -166,6 +166,16 @@ class DeliveryIT extends AbstractEmbeddedPostgresIT {
         assertThat(r.getBody().get("errors").findValuesAsText("field")).containsExactly("runId");
         assertThat(r.getBody().toString()).doesNotContain("abc");
 
+        // no scalar coercion
+        for (String runId : List.of("\"123\"", "1.5", "true")) {
+            r = sink.post(key, "7.1", "{\"runId\":" + runId + ",\"channel\":\"SMS\",\"payload\":{}}");
+            assertProblem(r, 400, "VALIDATION_FAILED");
+            assertThat(r.getBody().get("errors").findValuesAsText("field")).containsExactly("runId");
+        }
+        r = sink.post(key, "7.1", "{\"runId\":" + run + ",\"channel\":1,\"payload\":{}}");
+        assertProblem(r, 400, "VALIDATION_FAILED");
+        assertThat(r.getBody().get("errors").findValuesAsText("field")).containsExactly("channel");
+
         assertProblem(sink.post(key, "7.1", "{\"runId\":0,\"channel\":\"PUSH\",\"payload\":{}}"), 400, "VALIDATION_FAILED");
 
         assertThat(attempts(run)).isZero();

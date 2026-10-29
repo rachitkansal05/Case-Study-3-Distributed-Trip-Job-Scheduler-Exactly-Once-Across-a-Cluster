@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  notification-sink logging. Profile "json" writes JSON lines with the MDC fields
+  runId, idemKeyHash and fencingToken; otherwise plain text (the message carries the same fields).
+  Payloads, phone numbers, e-mails and raw idempotency keys are never logged.
+-->
+<configuration>
+  <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+  <springProfile name="json">
+    <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
+      <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+        <includeMdc>true</includeMdc>
+      </encoder>
+    </appender>
+    <root level="INFO">
+      <appender-ref ref="JSON"/>
+    </root>
+  </springProfile>
+
+  <springProfile name="!json">
+    <include resource="org/springframework/boot/logging/logback/console-appender.xml"/>
+    <root level="INFO">
+      <appender-ref ref="CONSOLE"/>
+    </root>
+  </springProfile>
+</configuration>

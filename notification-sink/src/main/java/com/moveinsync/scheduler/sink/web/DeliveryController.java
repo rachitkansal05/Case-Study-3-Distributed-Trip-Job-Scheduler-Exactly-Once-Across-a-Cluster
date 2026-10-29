@@ -2,6 +2,10 @@ package com.moveinsync.scheduler.sink.web;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.ObjectReader;
+import com.fasterxml.jackson.databind.cfg.CoercionAction;
+import com.fasterxml.jackson.databind.cfg.CoercionInputShape;
+import com.fasterxml.jackson.databind.type.LogicalType;
 import com.fasterxml.jackson.databind.exc.MismatchedInputException;
 import com.moveinsync.scheduler.core.domain.DeliveryOutcome;
 import com.moveinsync.scheduler.core.domain.FencingToken;
@@ -29,12 +33,26 @@ public class DeliveryController {
 
     private final DeliveryService deliveries;
     private final PayloadHasher hasher;
-    private final ObjectMapper objectMapper;
+    private final ObjectReader requestReader;
 
     public DeliveryController(DeliveryService deliveries, PayloadHasher hasher, ObjectMapper objectMapper) {
         this.deliveries = deliveries;
         this.hasher = hasher;
-        this.objectMapper = objectMapper;
+        this.requestReader = strict(objectMapper).readerFor(DeliveryRequest.class);
+    }
+
+    /** No scalar coercion: {@code "runId":"123"} or {@code "runId":1.5} is a type error, not 123 or 1. */
+    private static ObjectMapper strict(ObjectMapper base) {
+        ObjectMapper strict = base.copy();
+        strict.coercionConfigFor(LogicalType.Integer)
+                .setCoercion(CoercionInputShape.String, CoercionAction.Fail)
+                .setCoercion(CoercionInputShape.Float, CoercionAction.Fail)
+                .setCoercion(CoercionInputShape.Boolean, CoercionAction.Fail);
+        strict.coercionConfigFor(LogicalType.Textual)
+                .setCoercion(CoercionInputShape.Integer, CoercionAction.Fail)
+                .setCoercion(CoercionInputShape.Float, CoercionAction.Fail)
+                .setCoercion(CoercionInputShape.Boolean, CoercionAction.Fail);
+        return strict;
     }
 
     /**
@@ -72,7 +90,7 @@ public class DeliveryController {
             throw new SinkProblemException(ProblemCode.MALFORMED_BODY, "A JSON request body is required.");
         }
         try {
-            DeliveryRequest body = objectMapper.readValue(rawBody, DeliveryRequest.class);
+            DeliveryRequest body = requestReader.readValue(rawBody);
             if (body == null) {
                 throw new SinkProblemException(ProblemCode.MALFORMED_BODY, "The request body must be a JSON object.");
             }
