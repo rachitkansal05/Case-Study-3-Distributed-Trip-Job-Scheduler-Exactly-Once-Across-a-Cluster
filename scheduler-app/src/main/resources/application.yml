@@ -1,0 +1,75 @@
+spring:
+  application:
+    name: scheduler
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/scheduler}
+    username: ${SPRING_DATASOURCE_USERNAME:scheduler}
+    password: ${SPRING_DATASOURCE_PASSWORD:scheduler}
+    hikari:
+      maximum-pool-size: 20
+      # Production (Patroni) URLs add targetServerType=primary so a demoted primary is never used.
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  jackson:
+    default-property-inclusion: non_null
+  threads:
+    virtual:
+      enabled: false
+
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+  error:
+    include-stacktrace: never
+    include-message: never
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      application: scheduler
+      node: ${scheduler.node-id}
+
+scheduler:
+  node-id: ${NODE_ID:node-local}
+  partitions: 128
+  run-lease:
+    duration: 10s
+    renew-interval: 3s
+  partition-lease:
+    duration: 6s
+    renew-interval: 2s
+    loop-interval: 1s
+  membership:
+    heartbeat-interval: 2s
+    dead-after: 6s
+  claim:
+    poll-interval: 200ms
+  orphan-sweep:
+    interval: 1s
+  workers:
+    count: 64
+    reserved-for-recovery: 1
+  self-fence-margin: 2s
+  tenant:
+    default-cap: 32
+  misfire:
+    default-threshold: 60s
+  retry:
+    max-attempts: 5
+    lease-lost-limit: 20
+    backoff-base: 2s
+    backoff-cap: 5m
+  sink:
+    base-url: ${SCHEDULER_SINK_BASE_URL:http://localhost:8090}
+  security:
+    # DEV ONLY. Always set SCHEDULER_JWT_HMAC_SECRET outside local development.
+    jwt-hmac-secret: ${SCHEDULER_JWT_HMAC_SECRET:dev-only-insecure-hmac-key-do-not-use-in-prod-0123456789}
