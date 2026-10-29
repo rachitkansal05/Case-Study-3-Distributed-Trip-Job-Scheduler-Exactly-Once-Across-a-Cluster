@@ -173,22 +173,24 @@ class InProcessBench {
             ScheduledExecutorService ses = Executors.newSingleThreadScheduledExecutor();
             long toT0Ms = Duration.between(env.cluster.dbNow(), load.t0()).toMillis();
             ses.schedule(() -> {
+                awaitBusy(env, victim.nodeId());
                 Set<Integer> owned = Set.copyOf(victim.ownedPartitions());
                 Instant at = env.cluster.dbNow();
                 env.cluster.kill(victim);
-                events.add(new Event("kill", victim.nodeId(), at, owned));
+                events.add(new Event("kill", victim.nodeId(), at, owned, runningOwnedBy(env, victim.nodeId())));
                 System.out.printf("bench chaos: killed %s owning %d partitions%n", victim.nodeId(), owned.size());
             }, toT0Ms + Math.round(0.4 * windowSec * 1000), TimeUnit.MILLISECONDS);
             ses.schedule(() -> {
+                awaitBusy(env, frozen.nodeId());
                 Set<Integer> owned = Set.copyOf(frozen.ownedPartitions());
                 Instant at = env.cluster.dbNow();
                 frozen.freeze();
-                events.add(new Event("freeze", frozen.nodeId(), at, owned));
+                events.add(new Event("freeze", frozen.nodeId(), at, owned, runningOwnedBy(env, frozen.nodeId())));
                 System.out.printf("bench chaos: froze %s owning %d partitions%n", frozen.nodeId(), owned.size());
             }, toT0Ms + Math.round(0.7 * windowSec * 1000), TimeUnit.MILLISECONDS);
             ses.schedule(() -> {
                 frozen.unfreeze();
-                events.add(new Event("unfreeze", frozen.nodeId(), env.cluster.dbNow(), Set.of()));
+                events.add(new Event("unfreeze", frozen.nodeId(), env.cluster.dbNow(), Set.of(), -1));
                 System.out.printf("bench chaos: unfroze %s%n", frozen.nodeId());
             }, toT0Ms + Math.round(0.7 * windowSec * 1000) + freezeSec * 1000L, TimeUnit.MILLISECONDS);
 
@@ -197,14 +199,16 @@ class InProcessBench {
             ses.awaitTermination(Math.round(0.7 * windowSec) + freezeSec + 60L, TimeUnit.SECONDS);
             List<RunSample> samples = load(env, load);
 
-            MarkdownTable ev = new MarkdownTable("event", "node", "at (s after T0, DB clock)", "partitions owned");
+            MarkdownTable ev = new MarkdownTable("event", "node", "at (s after T0, DB clock)", "partitions owned",
+                    "RUNNING runs it held just after the event");
             List<Event> evs;
             synchronized (events) {
                 evs = List.copyOf(events);
             }
             for (Event e : evs) {
                 ev.row(e.kind(), e.node(), f1((e.at().toEpochMilli() - load.t0().toEpochMilli()) / 1000.0),
-                        e.kind().equals("unfreeze") ? "-" : e.partitions().size());
+                        e.kind().equals("unfreeze") ? "-" : e.partitions().size(),
+                        e.runningAtEvent() < 0 ? "-" : e.runningAtEvent());
             }
             rep.section("Chaos events", ev.toString());
 
@@ -609,7 +613,26 @@ class InProcessBench {
         });
     }
 
-    record Event(String kind, String node, Instant at, Set<Integer> partitions) {
+    /**
+     * Waits (at most 2 s) until {@code node} holds at least one RUNNING run, so the kill or freeze
+     * lands mid-run and exercises the orphan takeover. Runs are claimed in batches on the 200 ms
+     * poll and last 20-60 ms, so at spread rates a node is idle most of each poll interval; a
+     * blindly timed event usually hits an idle node and tests only the partition handover.
+     */
+    private static void awaitBusy(Env env, String node) {
+        long deadline = System.nanoTime() + 2_000_000_000L;
+        while (System.nanoTime() < deadline && runningOwnedBy(env, node) == 0) {
+            Thread.onSpinWait();
+        }
+    }
+
+    /** RUNNING runs whose owner is {@code node} (DB), read right after a chaos event. */
+    private static long runningOwnedBy(Env env, String node) {
+        return env.cluster.jdbc().sql("SELECT count(*) FROM job_run WHERE state = 'RUNNING' AND owner_node = ?")
+                .param(node).query(Long.class).single();
+    }
+
+    record Event(String kind, String node, Instant at, Set<Integer> partitions, long runningAtEvent) {
     }
 
     /** System-wide CPU load (0..100 %) sampled about once a second while runs are due. */
