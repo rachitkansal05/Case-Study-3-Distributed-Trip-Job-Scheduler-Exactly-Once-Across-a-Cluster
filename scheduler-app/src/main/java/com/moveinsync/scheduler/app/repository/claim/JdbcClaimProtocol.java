@@ -312,7 +312,10 @@ public final class JdbcClaimProtocol implements ClaimProtocol {
         }
         List<ClaimedRun> runs = new ArrayList<>(started.size());
         reaped.forEach(id -> observer.onReaped(id, false));
-        reapedDead.forEach(id -> observer.onReaped(id, true));
+        reapedDead.forEach(id -> {
+            observer.onReaped(id, true);
+            observer.onDeadLettered(id, RetryDecider.FENCING_CONFLICT); // the only reason a reap dead-letters
+        });
         if (capRejected) {
             observer.onCapRejected(tenant);
         }
@@ -539,6 +542,9 @@ public final class JdbcClaimProtocol implements ClaimProtocol {
             throw new ClaimStoreException("orphan takeover failed", e);
         }
         observer.onReaped(runId, dead);
+        if (dead) {
+            observer.onDeadLettered(runId, RetryDecider.FENCING_CONFLICT);
+        }
         if (reapedOnly) {
             return Optional.empty();
         }
@@ -697,6 +703,9 @@ public final class JdbcClaimProtocol implements ClaimProtocol {
                     }
                 }
                 c.commit();
+                if (applied) {
+                    observer.onDeadLettered(runId, dead.errorCode());
+                }
                 return applied;
             } catch (SQLException | RuntimeException e) {
                 rollbackQuietly(c);
