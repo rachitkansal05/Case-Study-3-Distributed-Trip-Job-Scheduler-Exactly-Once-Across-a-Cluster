@@ -142,7 +142,7 @@ also holds it through the checkpoint, the fenced commit and the claim round trip
 the slot. That comes to about 46 ms, and 32 / 0.046 s ≈ 700 runs/s. Before the slot-refill
 change on this branch, claims happened only on the 200 ms poll, and the same tenant drained at
 about 144 runs/s. `DrainRateIT` (3 nodes, cap 32, 40 ms handler, 5,000 runs) measured 614–645
-runs/s over six runs on this machine, and it asserts ≥ 600.
+runs/s over seven runs on this machine, and it asserts ≥ 600.
 
 ### 3.3 Scenario 3, spread + chaos: **p99 291 ms overall, 0 duplicates; p99 in the affected window 3.7 s (kill) and 5.3 s (freeze)**
 
@@ -213,7 +213,7 @@ at both events. The harness now waits for a busy node, and that is the run repor
 Takeover time itself is measured by two tests:
 
 - `NodeCrashIT` (real timings, 500 ms sweep, bound 11.2 s): 10.08 s, 9.99 s and 10.03 s from the
-  kill, plus 10.12 s and 10.13 s in the two later full builds.
+  kill, plus 10.12 s, 10.13 s, 10.13 s and 10.15 s in the four full builds.
 - `EndToEndKillIT` (real sink over HTTP): 7.97 s and 8.22 s from the kill, in two runs.
 
 ### 3.4 Where it stops scaling: **between 900 and 1,000 runs/s (about 2,700–3,000 state transitions/s) on this laptop**
