@@ -12,13 +12,13 @@ Two end-to-end failure drills against the docker compose cluster. Each one sends
 ## Prerequisites
 
 - Docker with Compose v2 (`docker compose`), bash 4 or newer, `curl`, `jq`, `awk`.
-- **The `dev` Spring profile on the scheduler nodes.** `docker-compose.yml` sets `SPRING_PROFILES_ACTIVE: json`, and `POST /dev/token` exists only in the `dev` profile (`DevTokenController` is `@Profile("dev")`). Without it the scripts cannot get a token and stop at the first step. `chaos/docker-compose.chaos.yml` is an override that sets `SPRING_PROFILES_ACTIVE: json,dev` for `scheduler-1/2/3`. Start the cluster with it:
+- **The `dev` Spring profile on the scheduler nodes.** `POST /dev/token` exists only in the `dev` profile (`DevTokenController` is `@Profile("dev")`). `docker-compose.yml` now sets `SPRING_PROFILES_ACTIVE: json,dev` itself, so a plain `docker compose up -d --build` is enough. `chaos/docker-compose.chaos.yml` sets the same value and is now redundant; it is kept because the scripts still pass it by default (below), and it does no harm:
 
   ```bash
   docker compose -f docker-compose.yml -f chaos/docker-compose.chaos.yml up -d --build
   ```
 
-  The scripts pass the same two `-f` files to every `docker compose` call unless `COMPOSE_FILE` is set. The alternative is to change `docker-compose.yml` itself to `SPRING_PROFILES_ACTIVE: json,dev`. That is a decision for the owners of that file, because it opens `/dev/token` in the default demo.
+  The scripts pass the same two `-f` files to every `docker compose` call unless `COMPOSE_FILE` is set. Never run the `dev` profile in production: it mints tokens for any tenant and role without authentication.
 
 ## Usage
 
@@ -105,6 +105,6 @@ The freeze script ends with a similar block that lists the four counters `before
 
 ## Known caveats
 
-- **Row locks held by a frozen node.** `docker pause` freezes the JVM but leaves its Postgres connections open. If the pause lands inside a transaction (a checkpoint `UPDATE`, for example), the row stays locked and the orphan sweep on the other node waits until unpause. No `idle_in_transaction_session_timeout` or `lock_timeout` is configured today. The freeze script prints a warning when the token did not change during the freeze. Setting `idle_in_transaction_session_timeout` on the scheduler role would bound this.
+- **Row locks held by a frozen node.** `docker pause` freezes the JVM but leaves its Postgres connections open. If the pause lands inside a transaction (a checkpoint `UPDATE`, for example), the row stays locked and the orphan sweep on the other node waits until unpause. The compose Postgres now runs with `idle_in_transaction_session_timeout=5s`, which ends such a session after 5 s and releases its locks, so the takeover is delayed by at most a few seconds. The freeze script still prints a warning when the token did not change during the freeze.
 - `maxDeliveriesPerKey` is global over the whole sink, so leftovers from earlier runs also count. A value above 1 is a real bug either way.
 - The kill script uses `docker kill`. Docker treats it as a manual stop, so `restart: unless-stopped` should not bring the node back by itself. The script restarts it with `docker compose start`.

@@ -75,8 +75,8 @@ java -jar loadgen/target/loadgen-0.1.0-SNAPSHOT.jar --scenario spread --jobs 100
 ```
 
 It creates tenants and jobs through the API (`POST /api/v1/tenants`, `POST /api/v1/jobs`, with
-`Idempotency-Key`), using tokens from `POST /dev/token` or, because compose does not enable the
-`dev` profile, tokens it signs itself with `--hmac-secret` / `SCHEDULER_JWT_HMAC_SECRET`. It then
+`Idempotency-Key`), using tokens from `POST /dev/token` (compose runs the nodes with the `json,dev` profiles) or,
+when that endpoint is absent, tokens it signs itself with `--hmac-secret` / `SCHEDULER_JWT_HMAC_SECRET`. It then
 reads the lag from `job_run` over JDBC and prints the same tables. In this mode `runAt` comes
 from the host clock, so host-to-DB clock skew shows up in the lag. `--help` lists every option.
 
