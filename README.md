@@ -160,7 +160,7 @@ Each node runs these loops:
 
 ### No single hot lock
 
-Jobs are split into **128 fixed partitions** (`murmur3(jobId) % 128`), each with its own lease row. Nodes contend per partition, not on one global lock row. When a node joins or leaves, only the partitions that hash to it move (about `128 / N`). With the compose node ids the split is 39 / 40 / 49; rendezvous hashing gives multinomial counts, so balance is a statistical property (max/min ≤ 1.3 on average), not an exact one.
+Jobs are split into **128 fixed partitions** (`murmur3(jobId) % 128`), each with its own lease row. Nodes contend per partition, not on one global lock row. When a node joins or leaves, only the partitions that hash to it move (about `128 / N`). With the compose node ids the split is 39 / 40 / 49; rendezvous hashing gives multinomial counts, so balance is a statistical property (max/min about 1.3: mean 1.31, median 1.27 over 10,000 random 3-node sets), not an exact one.
 
 Partition ownership only spreads polling load; correctness does not depend on it. If two nodes poll the same partition during a handover, `FOR UPDATE SKIP LOCKED` and the run-level fencing token still allow only one claim per run.
 
@@ -235,7 +235,7 @@ A run has **misfired** when it is claimed more than `misfireThreshold` (default 
 | `SKIP` | All 3 skipped; the next run is normal | Pickup alerts: a late alert is useless |
 | `COALESCE` | The newest runs once with `coalescedCount = 3`; the others are skipped | Roster generation: only the latest matters |
 
-**Retries** use exponential backoff with full jitter: `delay = random(0, min(5 min, 2 s × 2^attempt))`. Sink 5xx (`SINK_5XX`), timeouts (`SINK_TIMEOUT`) and the max-run-time stop (`TIMEOUT`) are retried. Payloads the handler cannot read (`INVALID_PAYLOAD`) and other sink 4xx (`SINK_REJECTED_<status>`) are dead-lettered at once. After `maxAttempts` (default 5, up to 100) the run is dead-lettered. An operator lists dead letters (error code and counts only, never payload data) and replays them: the **same run row and idempotency key** go back to `SCHEDULED`, so items delivered before the run died are not sent again. Replaying twice returns `409 DEAD_LETTER_ALREADY_REPLAYED`.
+**Retries** use exponential backoff with full jitter: `delay = random(0, min(5 min, 2 s × 2^attempt))`. Sink 5xx (`SINK_5XX`), timeouts (`SINK_TIMEOUT`) and the max-run-time stop (`TIMEOUT`) are retried. Payloads the handler cannot read (`INVALID_PAYLOAD`) and other sink 4xx (`SINK_REJECTED_<status>`) are dead-lettered at once. After `maxAttempts` (default 5, up to 100) the run is dead-lettered. An operator lists dead letters (error code and counts only, never payload data) and replays them: the **same run row and idempotency key** go back to `SCHEDULED`, so items delivered before the run died are not sent again. Replaying twice returns `409 DEAD_LETTER_ALREADY_REPLAYED`. Caveat: replay keeps the run's original `scheduled_at`, so for a `SKIP` or `COALESCE` job replayed more than `misfireThreshold` after its scheduled time, the claim applies the misfire policy and the run becomes `SKIPPED` instead of executing; only `FIRE_NOW` jobs (or replays within the threshold) always run again.
 
 ---
 
@@ -285,7 +285,7 @@ All endpoints are under `/api/v1` and need a bearer token. Roles are checked per
 
 | Method and path | Purpose | Roles | `Idempotency-Key` |
 |---|---|---|---|
-| `POST /tenants` | Create a tenant: `{"id","timeZone","cap"}` (cap optional, default 32) | OPERATOR | not accepted (repeat → `409 TENANT_EXISTS`) |
+| `POST /tenants` | Create a tenant: `{"id","timeZone","cap"}` (cap optional, default 32) | OPERATOR | ignored (a repeat gets `409 TENANT_EXISTS`) |
 | `POST /jobs` | Create a one-off or recurring job (201) | ADMIN | optional |
 | `GET /jobs/{id}` | Job definition; payload only for ADMIN, `payloadRedacted: true` otherwise | ADMIN, EMPLOYEE, OPERATOR | — |
 | `GET /jobs/{id}/next-fire-times?count=10` | Next 1–100 fire times with local time and offset | ADMIN, EMPLOYEE | — |
@@ -316,7 +316,7 @@ Errors are RFC 7807 problem details (`application/problem+json`) with a stable `
 }
 ```
 
-Responses never contain stack traces, SQL or payload values. Validation errors (`400 VALIDATION_FAILED`, `INVALID_CRON`) list `errors: [{field, message}]` and never echo the value. The notification sink's own API is in [`docs/sink-api.md`](docs/sink-api.md).
+Responses never contain stack traces, SQL or payload values. Validation errors (`400 VALIDATION_FAILED`, `INVALID_CRON`) list `errors: [{field, reason}]` and never echo the value. The notification sink's own API is in [`docs/sink-api.md`](docs/sink-api.md).
 
 ---
 
@@ -366,7 +366,7 @@ Note that `scheduler_orphan_takeover_time_seconds` measures lease expiry → res
 |---|---|---|
 | Job definitions (engine, `RunExecutor`) | `(jobId, version)`, 50,000 entries | Never: a run records the version it was materialised from, and a version never changes |
 | `tenant-settings` (time zone) | tenant id, 10,000 entries, expire 5 s after write | Up to 5 s |
-| `next-fire-times` | `(jobId, version, count)`, 50,000 entries, expire 30 s after write | Up to 30 s after a tenant changes time zone |
+| `next-fire-times` | `(jobId, version, count)`, 50,000 entries, expire 30 s after write | Up to about 35 s after a tenant's time zone changes (5 s tenant-settings + 30 s), though there is no API to change a zone yet |
 
 **Caps and pause are never cached**: the cap is the slot rows themselves and the claim reads `tenant.paused` directly, so both take effect on the next claim (`CachingIT`). The two Spring caches export `cache_gets_total`, `cache_puts_total`, `cache_evictions_total` and `cache_size`.
 
@@ -438,7 +438,7 @@ Knobs, a 5-minute smoke run and the compose-mode load generator (`java -jar load
 | Burst: tenant A, 50,000 at once, cap 32 | 50,000 | 698 runs/s, drained in 71.6 s | 36.2 s | 70.8 s | 71.6 s | **0** |
 | Spread + chaos: kill at 4 min, 30 s freeze at 7 min | 100,000 | same arrivals as spread | 109 ms | **291 ms** | 7.2 s | **0** |
 
-**Machine:** Intel Core i7-10750H (6 cores / 12 threads, laptop), 16 GiB DDR4-2933, 1 TB NVMe SSD (Intel 660p, QLC), Windows 11 Home 10.0.26200, Java HotSpot 22.0.2 (code built with `--release 21`), benchmark JVM `-Xmx4g -Xms1g -XX:+UseG1GC` shared by the 3 nodes, sink JVM `-Xmx768m`. PostgreSQL 16.15 (zonky embedded binaries), `shared_buffers=512MB`, `max_connections=400`, `fsync=on`, `synchronous_commit=on`. No Docker: everything ran in-process or as a local process.
+**Machine:** Intel Core i7-10750H (6 cores / 12 threads, laptop), 16 GiB DDR4-2933, 1 TB NVMe SSD (Intel 660p, QLC), Windows 11 Home Single Language 10.0.26200, Java HotSpot 22.0.2 (code built with `--release 21`), benchmark JVM `-Xmx4g -Xms1g -XX:+UseG1GC` shared by the 3 nodes, sink JVM `-Xmx768m`. PostgreSQL 16.15 (zonky embedded binaries), `shared_buffers=512MB`, `max_connections=400`, `fsync=on`, `synchronous_commit=on`. No Docker: everything ran in-process or as a local process.
 
 **The chaos run, honestly.** Across the whole 10 minutes p99 stayed at 291 ms, and nothing was lost or duplicated (100,000 distinct deliveries; 17 orphan takeovers; 5 re-sends absorbed as `ALREADY_DELIVERED`; 17 stale sends from the thawed node rejected with 409). But the 2 s target is **missed for runs that fall due in the dead or frozen node's partitions in the seconds after the event**:
 
@@ -463,7 +463,7 @@ The cause is partition handover, not takeover: new runs in a dead or frozen node
 | Single-tenant drain at cap 32 | ≥ 600 runs/s (614–645 measured) | `DrainRateIT`; 698 runs/s in the burst benchmark |
 | Takeover after kill -9 | **≤ 10.7 s** bound; 9.99–10.15 s measured | 10 s lease + 0.5 s sweep + 0.2 s claim, whatever the partition timing (`NodeCrashIT`); 11.2 s is the test assertion and alert threshold |
 | New runs in a dead node's partitions | up to about 7 s | 6 s partition lease + 1 s loop (`RebalanceIT` bound 7 s); benchmark worst 4.4 s (kill) and 7.2 s (freeze) |
-| Partition balance | max/min ≤ 1.3 on average, not exact | Rendezvous hashing; compose ids give 39 / 40 / 49 |
+| Partition balance | max/min about 1.3 (mean 1.31, p90 1.58 over random 3-node sets), not exact | Rendezvous hashing; compose ids give 39 / 40 / 49 |
 | Synchronous replication (production) | + ≈ 1 ms per commit, *estimate* | One LAN round trip to the synchronous standby; not measured |
 
 **Where it stops scaling.** On this laptop p99 crosses 2 s between 900 and 1,000 runs/s (900 passed warm with p99 246 ms and failed cold at 4.6 s, so it is right at the edge). Above the knee nothing fails or duplicates; runs queue and lag grows to 9–16 s. The earlier estimate of 5,000–10,000 transitions/s for Postgres alone is withdrawn: the measured knee is lower, and it is not a database-only limit, since the scheduler JVM, the sink JVM and Postgres share 6 cores and CPU reached 91–100 % in the failing steps. **The bottleneck was not isolated.** The leading hypothesis is the poller: each node claims tenant by tenant, one transaction after another, on a single thread; with 50 tenants that is up to 50 claim transactions per node per 200 ms tick, and once a tick takes longer than 200 ms lag grows without bound. The next step is to profile, or to run Postgres on separate hardware. If the poller is the limit, claim several tenants per transaction or in parallel; if Postgres is, shard by partition range (partitions already give the routing key) and later move dispatch to a partitioned log. 128 partitions also caps useful nodes at about 40.
@@ -567,6 +567,7 @@ The build machine has no Docker. Everything below was written and checked as far
 - **Max run time.** The hard stop at `maxRunTime` (`TIMEOUT`, retryable) is implemented but has no dedicated test.
 - **No run retention.** Finished `job_run` rows are never deleted; a partition-by-day retention job is planned. `api_idempotency` is purged after 24 h.
 - **Takeover alert semantics.** `SchedulerOrphanTakeoverSlow` compares lease-expiry-to-restart time (normally < 1 s) against 11.2 s, a crash-to-restart bound, so it fires only very late. See [Monitoring](#monitoring).
+- **Replay vs misfire.** A replayed dead letter of a `SKIP`/`COALESCE` job older than its misfire threshold is skipped, not run (see [Misfires](#misfires-retries-and-the-dead-letter-list)).
 - No list-jobs endpoint, no `GET /tenants/{t}`, no early lease revocation on cap reduction, no Postgres row-level security (tenant isolation is enforced in every repository query).
 
 ---

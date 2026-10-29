@@ -1324,7 +1324,7 @@
           ]
         },
         {
-          "name": "Create a one-off alert due in 30 s",
+          "name": "Create a one-off alert due in 30 s (FIRE_NOW, so the replay runs)",
           "request": {
             "method": "POST",
             "header": [
@@ -1356,13 +1356,14 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"kind\": \"ONE_OFF\",\n  \"handler\": \"PICKUP_ALERT\",\n  \"runAt\": \"{{runAt}}\",\n  \"priority\": 1,\n  \"maxRunTime\": \"PT5M\",\n  \"misfire\": \"SKIP\",\n  \"payload\": {\n    \"employeeIds\": [\"emp-0001\", \"emp-0002\", \"emp-0003\"],\n    \"messageTemplate\": \"Hi {employeeId}, your cab arrives at {pickupTime}\",\n    \"pickupTime\": \"08:05\"\n  }\n}",
+              "raw": "{\n  \"kind\": \"ONE_OFF\",\n  \"handler\": \"PICKUP_ALERT\",\n  \"runAt\": \"{{runAt}}\",\n  \"priority\": 1,\n  \"maxRunTime\": \"PT5M\",\n  \"misfire\": \"FIRE_NOW\",\n  \"payload\": {\n    \"employeeIds\": [\"emp-0001\", \"emp-0002\", \"emp-0003\"],\n    \"messageTemplate\": \"Hi {employeeId}, your cab arrives at {pickupTime}\",\n    \"pickupTime\": \"08:05\"\n  }\n}",
               "options": {
                 "raw": {
                   "language": "json"
                 }
               }
-            }
+            },
+            "description": "FIRE_NOW on purpose: replay keeps the original scheduled_at, so a SKIP job replayed more than 60 s late would be SKIPPED, not run."
           },
           "event": [
             {
