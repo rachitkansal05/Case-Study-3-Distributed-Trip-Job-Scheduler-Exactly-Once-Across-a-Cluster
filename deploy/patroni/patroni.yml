@@ -1,0 +1,134 @@
+# Patroni configuration shared by pg-1, pg-2 and pg-3 (PLAN.md section 12, F1-F5).
+#
+# One template for all three nodes: the per-node values (member name and the addresses other
+# members and HAProxy use to reach it) come from Patroni's own environment overrides, set in
+# docker-compose.patroni.yml:
+#   PATRONI_NAME                      pg-1 | pg-2 | pg-3
+#   PATRONI_RESTAPI_CONNECT_ADDRESS   pg-N:8008
+#   PATRONI_POSTGRESQL_CONNECT_ADDRESS pg-N:5432
+#   PATRONI_SUPERUSER_PASSWORD / PATRONI_REPLICATION_PASSWORD / PATRONI_REWIND_PASSWORD
+# Environment values win over this file.
+
+scope: scheduler-pg          # cluster name: the etcd key prefix is /service/scheduler-pg
+namespace: /service/
+name: pg-template            # overridden by PATRONI_NAME
+
+restapi:
+  listen: 0.0.0.0:8008
+  connect_address: pg-template:8008   # overridden by PATRONI_RESTAPI_CONNECT_ADDRESS
+
+etcd3:
+  # Three etcd members: the DCS (and with it the leader lock) survives the loss of one.
+  hosts:
+    - etcd-1:2379
+    - etcd-2:2379
+    - etcd-3:2379
+
+bootstrap:
+  # Written to etcd once, when the cluster is first initialised. Change it later with
+  # `patronictl edit-config`, not here: after bootstrap Patroni reads these keys from etcd.
+  dcs:
+    ttl: 30                    # leader lock lifetime in etcd (s)
+    loop_wait: 10              # seconds between HA loop runs
+    retry_timeout: 10          # DCS and Postgres operations retried this long before demoting
+    # Failover candidates more than 1 MiB of WAL behind the last known primary position are
+    # skipped. In synchronous mode only the recorded synchronous standby can be promoted anyway
+    # (F3); this is a second guard for manual switchovers.
+    maximum_lag_on_failover: 1048576
+    # A candidate whose timeline is behind the leader's is not healthy for promotion, which keeps
+    # timelines (and so the scheduler's fencing epoch, F5) moving forward.
+    check_timeline: true
+
+    # --- F2: never fall back to asynchronous replication ---------------------------------------
+    # synchronous_mode: Patroni manages synchronous_standby_names and records the current
+    # synchronous standby in etcd (/sync key); only that member may be promoted (F3).
+    # synchronous_mode_strict: with no synchronous standby available, the primary does NOT drop
+    # to async; Patroni sets synchronous_standby_names = '*' and writes block until a standby is
+    # back (PLAN 12: "No synchronous standby available -> writes block").
+    synchronous_mode: true
+    synchronous_mode_strict: true
+    # 1-of-2 synchronous: 1 primary + 2 replicas, of which 1 is synchronous at any time and the
+    # other is a potential synchronous standby. If the synchronous one fails, Patroni moves the
+    # sync role to the other replica; with strict mode, writes block only if both replicas are gone.
+    synchronous_node_count: 1
+    # Patroni sets synchronous_standby_names itself: "pg-2" for one node, or "N (a,b)" (FIRST N)
+    # for N > 1. NEVER set synchronous_standby_names by hand in parameters below; Patroni would
+    # overwrite it and a hand-written value could name a standby Patroni does not consider
+    # synchronous, which breaks F3. (synchronous_mode: quorum gives ANY k (...) instead; see
+    # README.md for the extra promotion rule that mode needs.)
+
+    # failsafe_mode: false (the default). With failsafe on, a primary that loses etcd keeps
+    # running as long as it can reach every other member over the REST API. We keep it off: on
+    # DCS loss the primary demotes itself, which costs availability but never risks two primaries.
+    failsafe_mode: false
+
+    postgresql:
+      use_pg_rewind: true      # a demoted primary rejoins by rewinding to the new timeline
+      use_slots: true          # permanent physical slots per member, so a standby's WAL is kept
+      parameters:
+        # --- F1: an acknowledged commit is on disk on the synchronous standby -----------------
+        synchronous_commit: "on"
+        wal_level: replica
+        hot_standby: "on"
+        max_wal_senders: 10
+        max_replication_slots: 10
+        wal_log_hints: "on"    # required by pg_rewind unless data checksums are on
+        wal_keep_size: 256MB
+        max_connections: 200
+        # synchronous_standby_names: managed by Patroni (see above). Do not set.
+
+  initdb:
+    - encoding: UTF8
+    - data-checksums
+    - locale: C.UTF-8
+
+  # Creates the scheduler role and database once, on the first primary only. It receives a
+  # superuser connection URL as its first argument.
+  post_bootstrap: /usr/local/bin/patroni-post-bootstrap.sh
+
+postgresql:
+  listen: 0.0.0.0:5432
+  connect_address: pg-template:5432   # overridden by PATRONI_POSTGRESQL_CONNECT_ADDRESS
+  data_dir: /var/lib/postgresql/data/patroni
+  bin_dir: /usr/lib/postgresql/16/bin
+  pgpass: /tmp/pgpass
+  authentication:
+    superuser:
+      username: postgres
+      password: change-me-superuser       # overridden by PATRONI_SUPERUSER_PASSWORD
+    replication:
+      username: replicator
+      password: change-me-replicator      # overridden by PATRONI_REPLICATION_PASSWORD
+    rewind:
+      username: rewinder
+      password: change-me-rewinder        # overridden by PATRONI_REWIND_PASSWORD
+  pg_hba:
+    - local all all trust
+    - host replication replicator 0.0.0.0/0 scram-sha-256
+    - host all all 0.0.0.0/0 scram-sha-256
+  parameters:
+    password_encryption: scram-sha-256
+
+# --- F4: the old primary cannot keep accepting writes ------------------------------------------
+# Patroni arms the watchdog when it takes the leader lock and keeps feeding it from the HA loop.
+# If Patroni hangs (or the machine stalls) past ttl - safety_margin, the watchdog reboots the host
+# before the leader key expires, so the old primary is gone before a replica can be promoted.
+#   mode: required   - a member that cannot open the watchdog will not become leader (production)
+#   mode: automatic  - use the watchdog if present, run without it otherwise (laptops; this loses
+#                      the F4 hardware guarantee and leaves only the leader lock + HAProxy checks)
+# The host must provide /dev/watchdog (load softdog: `modprobe softdog`) and the postgres user
+# (uid 999 in the image) must be able to open it. Only one process can hold /dev/watchdog, so
+# `required` needs one Patroni per host; see README.md. The entrypoint can switch the mode with
+# WATCHDOG_MODE=automatic for a single-host demo.
+watchdog:
+  mode: required
+  device: /dev/watchdog
+  safety_margin: 5
+
+# --- failover candidates ------------------------------------------------------------------------
+tags:
+  nofailover: false            # every member may be promoted (set true to exclude a member)
+  failover_priority: 1         # equal priority: the synchronous standby decides (Patroni >= 3.2)
+  noloadbalance: false         # include in the read-only HAProxy pool (/replica)
+  clonefrom: false
+  nosync: false                # every replica may become the synchronous standby
