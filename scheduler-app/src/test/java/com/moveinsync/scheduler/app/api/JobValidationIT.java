@@ -1,5 +1,6 @@
 package com.moveinsync.scheduler.app.api;
 
+import com.moveinsync.scheduler.core.cluster.PartitionHasher;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -24,7 +25,7 @@ import org.junit.jupiter.params.provider.MethodSource;
  * Job definition rules of {@code POST /api/v1/jobs} (PLAN.md section 13, R1/R14): every invalid
  * body is a 400 naming the offending field without echoing its value and creates nothing; valid
  * one-off and recurring jobs are stored with the documented defaults, version 1, the partition
- * {@code floorMod(id.hashCode(), 128)} and the first fire time as {@code next_fire_at}.
+ * {@code PartitionHasher.partitionOf(id)} (murmur3) and the first fire time as {@code next_fire_at}.
  */
 class JobValidationIT extends ApiIntegrationTest {
 
@@ -185,7 +186,7 @@ class JobValidationIT extends ApiIntegrationTest {
         assertThat(j.get("misfire").asText()).isEqualTo("FIRE_NOW");
         assertThat(j.get("misfireThreshold").asText()).isEqualTo("PT1M");
         assertThat(j.get("maxAttempts").asInt()).isEqualTo(5);
-        assertThat(j.get("partitionId").asInt()).isEqualTo(Math.floorMod(id.hashCode(), 128)).isBetween(0, 127);
+        assertThat(j.get("partitionId").asInt()).isEqualTo(PartitionHasher.partitionOf(id)).isBetween(0, 127);
         assertThat(Instant.parse(j.get("nextFireAt").asText())).isEqualTo(RUN_AT);
         assertThat(j.get("version").asLong()).isEqualTo(1);
         assertThat(j.get("enabled").asBoolean()).isTrue();
@@ -202,7 +203,7 @@ class JobValidationIT extends ApiIntegrationTest {
         assertThat(row.get("misfire")).isEqualTo("FIRE_NOW");
         assertThat(((Number) row.get("misfire_threshold_s")).intValue()).isEqualTo(60);
         assertThat(((Number) row.get("max_attempts")).intValue()).isEqualTo(5);
-        assertThat(((Number) row.get("partition_id")).intValue()).isEqualTo(Math.floorMod(id.hashCode(), 128));
+        assertThat(((Number) row.get("partition_id")).intValue()).isEqualTo(PartitionHasher.partitionOf(id));
         assertThat(((Number) row.get("version")).longValue()).isEqualTo(1);
         assertThat(row.get("enabled")).isEqualTo(true);
         assertThat(row.get("trip_id")).isEqualTo("42");
@@ -233,7 +234,7 @@ class JobValidationIT extends ApiIntegrationTest {
         assertThat(j.get("maxAttempts").asInt()).isEqualTo(3);
         assertThat(j.get("maxRunTime").asText()).isEqualTo("PT10M");
         assertThat(j.get("version").asLong()).isEqualTo(1);
-        assertThat(j.get("partitionId").asInt()).isEqualTo(Math.floorMod(id.hashCode(), 128));
+        assertThat(j.get("partitionId").asInt()).isEqualTo(PartitionHasher.partitionOf(id));
         Instant next = Instant.parse(j.get("nextFireAt").asText());
         // the fake fires at the top of every hour: the first one strictly after "now"
         assertThat(next).isIn(topOfNextHour(before), topOfNextHour(after));
