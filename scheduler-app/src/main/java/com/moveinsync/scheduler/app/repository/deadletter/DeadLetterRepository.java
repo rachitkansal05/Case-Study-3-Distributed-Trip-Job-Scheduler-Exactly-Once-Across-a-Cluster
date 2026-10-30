@@ -56,14 +56,17 @@ public class DeadLetterRepository {
     /**
      * Puts the same run row back to {@code SCHEDULED}, due now, with {@code attempt} and
      * {@code lease_lost_count} reset and no lease or slot. {@code idem_key} and the checkpoint are
-     * kept, so items delivered before the run died are not sent again. Returns 0 unless the run
-     * is {@code DEAD_LETTERED}.
+     * kept, so items delivered before the run died are not sent again. {@code scheduled_at} is
+     * kept too (it is the occurrence the handler works on); {@code misfire_exempt} makes the claim
+     * run it however late it is, since a replay is an explicit request to run. Returns 0 unless the
+     * run is {@code DEAD_LETTERED}.
      */
     public int rescheduleRun(TenantScope scope, long runId) {
         return scope.bind(jdbc.sql("""
                         UPDATE job_run
                            SET state = 'SCHEDULED', due_at = clock_timestamp(), attempt = 0, lease_lost_count = 0,
-                               slot_no = NULL, owner_node = NULL, lease_until = NULL, finished_at = NULL
+                               slot_no = NULL, owner_node = NULL, lease_until = NULL, finished_at = NULL,
+                               misfire_exempt = true
                          WHERE id = :runId AND state = 'DEAD_LETTERED' AND """ + scope.predicate("tenant_id")))
                 .param("runId", runId)
                 .update();

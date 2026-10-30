@@ -118,14 +118,15 @@ public final class JdbcClaimProtocol implements ClaimProtocol {
     /* Step 2 (I3, I6): conditional reap. Waits on the holder's row lock and re-evaluates the WHERE
        on the newest row version, so it cannot race a renewal: exactly one of renew/reap updates
        the row. Pinned to (tenant, slot) so a run that moved slots is never reaped through a stale
-       slot. A lease loss: the attempt is given back and lease_lost_count rises. */
+       slot. A lease loss: the attempt is given back and lease_lost_count rises. lease_until is not
+       changed here, so it returns the expired lease (the takeover time is measured from it). */
     private static final String REAP = """
             UPDATE job_run
                SET state = 'RETRY_WAIT', slot_no = NULL, due_at = clock_timestamp(),
                    lease_lost_count = lease_lost_count + 1, attempt = greatest(attempt - 1, 0)
              WHERE id = ? AND tenant_id = ? AND slot_no = ?
                AND state = 'RUNNING' AND lease_until < clock_timestamp()
-            RETURNING lease_lost_count
+            RETURNING lease_lost_count, lease_until
             """;
 
     /* I6: past the lease-lost limit a reaped run is dead-lettered (FENCING_CONFLICT) so a fencing
@@ -140,7 +141,7 @@ public final class JdbcClaimProtocol implements ClaimProtocol {
        due time; run rows are locked after the slot rows, SKIP LOCKED so two nodes polling the same
        partition during a handover take different runs. Disabled jobs never start. */
     static final String CANDIDATES = """
-            SELECT r.id, r.job_id, r.state, r.scheduled_at, j.misfire,
+            SELECT r.id, r.job_id, r.state, r.misfire_exempt, r.scheduled_at, j.misfire,
                    (extract(epoch FROM j.misfire_threshold) * 1000)::bigint AS threshold_ms,
                    clock_timestamp() AS db_now
               FROM job_run r JOIN job j ON j.id = r.job_id
@@ -154,30 +155,32 @@ public final class JdbcClaimProtocol implements ClaimProtocol {
 
     /* Step 3 start (I3, I5, I6): only for a run whose row we locked and a slot whose row we locked.
        New token = (epoch read in this txn, nextval('fence_seq')); lease on the DB clock (I1);
-       started_at keeps the first start (fire lag); attempt + 1. */
+       started_at keeps the first start (fire lag); attempt + 1. first_start reads started_at before
+       this update (the row is already locked by us, so the sub-select sees the version we update):
+       only a run that never started reports fire lag, not a retry and not a replayed dead letter. */
     private static final String START = """
-            UPDATE job_run
+            UPDATE job_run r
                SET state = 'RUNNING', slot_no = ?, owner_node = ?,
                    fencing_epoch = ?, fencing_seq = nextval('fence_seq'),
                    lease_until = clock_timestamp() + ? * interval '1 millisecond',
-                   started_at = coalesce(started_at, clock_timestamp()), finished_at = NULL,
-                   attempt = attempt + 1, coalesced_count = coalesce(?, coalesced_count)
-             WHERE id = ? AND state IN ('SCHEDULED', 'RETRY_WAIT')
-            RETURNING id, job_id, tenant_id, partition_id, job_version, priority, slot_no,
-                      fencing_epoch, fencing_seq, idem_key, scheduled_at, attempt, lease_lost_count,
-                      (extract(epoch FROM max_run_time) * 1000)::bigint AS max_run_time_ms,
-                      clock_timestamp() AS claimed_at, lease_until, checkpoint::text AS checkpoint,
-                      coalesced_count,
-                      (extract(epoch FROM (started_at - scheduled_at)) * 1000)::bigint AS lag_ms,
-                      (SELECT j.handler FROM job j WHERE j.id = job_run.job_id) AS handler
+                   started_at = coalesce(r.started_at, clock_timestamp()), finished_at = NULL,
+                   attempt = r.attempt + 1, coalesced_count = coalesce(?, r.coalesced_count)
+              FROM (SELECT id, started_at IS NULL AS first_start FROM job_run WHERE id = ?) prev
+             WHERE r.id = prev.id AND r.state IN ('SCHEDULED', 'RETRY_WAIT')
+            RETURNING r.id, r.job_id, r.tenant_id, r.partition_id, r.job_version, r.priority, r.slot_no,
+                      r.fencing_epoch, r.fencing_seq, r.idem_key, r.scheduled_at, r.attempt, prev.first_start,
+                      (extract(epoch FROM r.max_run_time) * 1000)::bigint AS max_run_time_ms,
+                      clock_timestamp() AS claimed_at, r.lease_until, r.checkpoint::text AS checkpoint,
+                      r.coalesced_count,
+                      (extract(epoch FROM (r.started_at - r.scheduled_at)) * 1000)::bigint AS lag_ms,
+                      (SELECT j.handler FROM job j WHERE j.id = r.job_id) AS handler
             """;
 
     // ------------------------------------------------------------------ orphan sweep (plan 06.6)
 
     /* Hint only (I1): expired RUNNING runs in ANY partition, oldest expiry first (index run_expired). */
     private static final String EXPIRED = """
-            SELECT id, tenant_id, slot_no,
-                   (extract(epoch FROM (clock_timestamp() - lease_until)) * 1000)::bigint AS since_ms
+            SELECT id, tenant_id, slot_no
               FROM job_run
              WHERE state = 'RUNNING' AND lease_until < clock_timestamp()
              ORDER BY lease_until
@@ -401,7 +404,7 @@ public final class JdbcClaimProtocol implements ClaimProtocol {
                 free.add(slot);
             } else if (holder[1] == 1) {
                 hooks.beforeReap(holder[0]);
-                ReapResult r = reap(c, holder[0], tenant.value(), slot);
+                ReapResult r = reap(c, holder[0], tenant.value(), slot).result();
                 hooks.afterReap(holder[0], r != ReapResult.STILL_VALID);
                 if (r != ReapResult.STILL_VALID) {
                     (r == ReapResult.DEAD_LETTERED ? reapedDead : reaped).add(holder[0]);
@@ -444,7 +447,7 @@ public final class JdbcClaimProtocol implements ClaimProtocol {
                     while (rs.next()) {
                         candidates.add(new MisfireResolver.Candidate(
                                 rs.getLong("id"), rs.getObject("job_id", UUID.class), rs.getString("state"),
-                                instant(rs, "scheduled_at"), rs.getString("misfire"),
+                                rs.getBoolean("misfire_exempt"), instant(rs, "scheduled_at"), rs.getString("misfire"),
                                 Duration.ofMillis(rs.getLong("threshold_ms")), instant(rs, "db_now")));
                     }
                 }
@@ -474,7 +477,7 @@ public final class JdbcClaimProtocol implements ClaimProtocol {
         if (maxRuns <= 0) {
             return List.of();
         }
-        record Orphan(long runId, String tenantId, int slot, long sinceMs) {
+        record Orphan(long runId, String tenantId, int slot) {
         }
         List<Orphan> orphans = new ArrayList<>();
         try (Connection c = dataSource.getConnection();
@@ -482,8 +485,7 @@ public final class JdbcClaimProtocol implements ClaimProtocol {
             ps.setInt(1, maxRuns);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
-                    orphans.add(new Orphan(rs.getLong("id"), rs.getString("tenant_id"), rs.getInt("slot_no"),
-                            rs.getLong("since_ms")));
+                    orphans.add(new Orphan(rs.getLong("id"), rs.getString("tenant_id"), rs.getInt("slot_no")));
                 }
             }
         } catch (SQLException e) {
@@ -491,12 +493,21 @@ public final class JdbcClaimProtocol implements ClaimProtocol {
         }
         List<ClaimedRun> taken = new ArrayList<>();
         for (Orphan o : orphans) {
-            takeOver(nodeId, o.runId(), o.tenantId(), o.slot()).ifPresent(run -> {
-                taken.add(run);
-                observer.onOrphanTakeover(run, Duration.ofMillis(Math.max(0, o.sinceMs())));
+            takeOver(nodeId, o.runId(), o.tenantId(), o.slot()).ifPresent(t -> {
+                taken.add(t.run());
+                observer.onOrphanTakeover(t.run(), t.sinceLastRenewal());
             });
         }
         return taken;
+    }
+
+    /**
+     * A restarted orphan and the time from its dead owner's last successful renewal (or claim) to
+     * this restart, both on the DB clock: the expired {@code lease_until} minus the run lease is
+     * the last moment the owner was proven alive. Bounded by lease + sweep + claim (10.7 s by
+     * default); assumes every node grants the same run lease.
+     */
+    private record TakenOver(ClaimedRun run, Duration sinceLastRenewal) {
     }
 
     /**
@@ -504,10 +515,10 @@ public final class JdbcClaimProtocol implements ClaimProtocol {
      * (higher) token from its checkpoint. Empty if another node got there first, the holder renewed
      * in time, the run hit the lease-lost limit, or the tenant is paused (then it is only reaped).
      */
-    private Optional<ClaimedRun> takeOver(String nodeId, long runId, String tenantId, int slot) {
+    private Optional<TakenOver> takeOver(String nodeId, long runId, String tenantId, int slot) {
         boolean reapedOnly = false;
         boolean dead = false;
-        Optional<ClaimedRun> result = Optional.empty();
+        Optional<TakenOver> result = Optional.empty();
         try (Connection c = transaction()) {
             try {
                 long epoch = epochReader.read(c); // I5, fail closed before touching anything
@@ -523,14 +534,16 @@ public final class JdbcClaimProtocol implements ClaimProtocol {
                     c.rollback();
                     return Optional.empty();
                 }
-                ReapResult r = reap(c, runId, tenantId, slot);
-                if (r == ReapResult.STILL_VALID) {
+                Reaped r = reap(c, runId, tenantId, slot);
+                if (r.result() == ReapResult.STILL_VALID) {
                     c.rollback();
                     return Optional.empty();
                 }
-                dead = r == ReapResult.DEAD_LETTERED;
+                dead = r.result() == ReapResult.DEAD_LETTERED;
                 if (!dead && !paused(c, tenantId)) {
-                    result = start(c, runId, slot, nodeId, epoch, null, true).map(Started::run);
+                    Instant lastRenewal = r.expiredLease().minusMillis(runLeaseMs);
+                    result = start(c, runId, slot, nodeId, epoch, null, true).map(Started::run)
+                            .map(run -> new TakenOver(run, nonNegative(Duration.between(lastRenewal, run.claimedAt()))));
                 }
                 reapedOnly = result.isEmpty();
                 c.commit(); // I5
@@ -564,23 +577,33 @@ public final class JdbcClaimProtocol implements ClaimProtocol {
 
     private enum ReapResult { FREED, DEAD_LETTERED, STILL_VALID }
 
+    /** Outcome of a reap and the expired {@code lease_until} it found (null if still valid). */
+    private record Reaped(ReapResult result, Instant expiredLease) {
+    }
+
+    private static Duration nonNegative(Duration d) {
+        return d.isNegative() ? Duration.ZERO : d;
+    }
+
     /** Conditional reap of {@code runId} in {@code (tenant, slot)}; caller holds the slot lock. */
-    private ReapResult reap(Connection c, long runId, String tenantId, int slot) throws SQLException {
+    private Reaped reap(Connection c, long runId, String tenantId, int slot) throws SQLException {
         int leaseLost;
+        Instant expiredLease;
         try (PreparedStatement ps = c.prepareStatement(REAP)) {
             ps.setLong(1, runId);
             ps.setString(2, tenantId);
             ps.setInt(3, slot);
             try (ResultSet rs = ps.executeQuery()) {
                 if (!rs.next()) {
-                    return ReapResult.STILL_VALID; // holder renewed (or committed) in time
+                    return new Reaped(ReapResult.STILL_VALID, null); // holder renewed (or committed) in time
                 }
-                leaseLost = rs.getInt(1);
+                leaseLost = rs.getInt("lease_lost_count");
+                expiredLease = instant(rs, "lease_until");
             }
         }
         Optional<RunFailure.DeadLetter> limit = retryDecider.onLeaseLost(leaseLost);
         if (limit.isEmpty()) {
-            return ReapResult.FREED;
+            return new Reaped(ReapResult.FREED, expiredLease);
         }
         try (PreparedStatement ps = c.prepareStatement(DEAD_LETTER_REAPED)) {
             ps.setString(1, lastError(limit.get()));
@@ -591,7 +614,7 @@ public final class JdbcClaimProtocol implements ClaimProtocol {
                 }
             }
         }
-        return ReapResult.DEAD_LETTERED;
+        return new Reaped(ReapResult.DEAD_LETTERED, expiredLease);
     }
 
     private Optional<Started> start(Connection c, long runId, int slot, String nodeId, long epoch,
@@ -612,7 +635,7 @@ public final class JdbcClaimProtocol implements ClaimProtocol {
                     return Optional.empty();
                 }
                 ClaimedRun run = toClaimedRun(rs, recovered);
-                boolean first = !recovered && run.attempt() == 1 && rs.getInt("lease_lost_count") == 0;
+                boolean first = !recovered && rs.getBoolean("first_start");
                 return Optional.of(new Started(run,
                         first ? Duration.ofMillis(Math.max(0, rs.getLong("lag_ms"))) : null));
             }

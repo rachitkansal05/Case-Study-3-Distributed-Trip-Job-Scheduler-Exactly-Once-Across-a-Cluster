@@ -84,6 +84,7 @@ Locks are always taken slot row first, then run row. Time comparisons always use
 | `scheduler.misfire.default-threshold` | `60s` | |
 | `scheduler.retry.max-attempts` / `.lease-lost-limit` / `.backoff-base` / `.backoff-cap` | `5` / `20` / `2s` / `5m` | |
 | `scheduler.api.idempotency-purge.interval` / `.batch-size` / `.max-batches` | `10m` / `1000` / `100` (read with `@Value` in `IdempotencyPurge`, not part of `SchedulerProperties`; retention is fixed at 24 h) | |
+| `scheduler.run-purge.retention` / `.interval` / `.batch-size` / `.max-batches` | `7d` / `10m` / `1000` / `100` (read with `@Value` in `RunPurge`, like the idempotency purge: finished runs older than the retention are deleted; dead-lettered runs are kept) | |
 | `scheduler.engine.*` | see `EngineProperties` (`enabled`, materializer, compactor, metrics, clock, epoch guard, sink client timeouts) | |
 | `scheduler.sink.base-url` | `http://localhost:8090` | `SCHEDULER_SINK_BASE_URL` |
 | `scheduler.security.jwt-hmac-secret` | dev-only key | `SCHEDULER_JWT_HMAC_SECRET` (**set this outside dev**) |

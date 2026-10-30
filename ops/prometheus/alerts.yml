@@ -1,6 +1,6 @@
 # Alert rules for every "Alert when" of PLAN.md section 14. Loaded by prometheus.yml (rule_files).
 #
-# Conventions (checked by OpsMetricReferencesTest / AlertRulesTest):
+# Conventions (checked by AlertRulesTest):
 #   - every rule has labels severity (critical | warning | info) and summary, and an annotation
 #     runbook_url pointing at the matching heading in docs/RUNBOOK.md;
 #   - only metric names listed in ops/metric-names.txt are used.
@@ -111,7 +111,7 @@ groups:
           severity: critical
           summary: Orphan takeover p99 above the 11.2 s bound
         annotations:
-          description: "p99 time from lease expiry to restart is {{ $value | humanizeDuration }} (bound 11.2 s)."
+          description: "p99 time from a dead owner's last lease renewal to the restart is {{ $value | humanizeDuration }} (bound 10.7 s, alert at 11.2 s)."
           runbook_url: docs/RUNBOOK.md#schedulerorphantakeoverslow
 
   - name: scheduler-cluster

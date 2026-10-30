@@ -46,6 +46,12 @@ import org.slf4j.MDC;
  *       the reap returns the run to {@code RETRY_WAIT} without using an attempt.
  *   <li>Any other failure → {@link RetryDecider#onFailure} → fenced {@code commitFailure} (retry
  *       with backoff, or dead letter). Max run time → {@code TIMEOUT}, retryable.
+ *   <li>Max run time is a hard stop: the handler is interrupted and every later effect is refused.
+ *       A handler that returns normally after that is still a {@code TIMEOUT}, never a success. A
+ *       handler that ignores the interrupt for a whole renew interval is abandoned: {@link
+ *       #hardStop} commits {@code TIMEOUT} for it (freeing its slot), renewals stop, and whatever
+ *       the thread does later is fenced off (its checkpoints update 0 rows, it writes no outcome).
+ *       The worker thread itself cannot be killed and keeps its worker permit until it returns.
  * </ul>
  */
 final class RunExecutor {
@@ -104,7 +110,7 @@ final class RunExecutor {
                 LeaseClock.startedAt(clock, ticket.claimNanos(), runLease, selfFenceMargin), Thread.currentThread());
         int maxAttempts = 1;
         try {
-            renewer.register(active);
+            renewer.register(active, () -> hardStop(active));
             JobSpec spec = spec(run);
             maxAttempts = spec.maxAttempts();
             JobHandler<?> handler = handlers.get(run.handler());
@@ -115,14 +121,24 @@ final class RunExecutor {
                 leaseLost(active.lost());
                 return;
             }
+            if (active.timedOut()) {
+                // returned (e.g. swallowed the interrupt) after the max run time: not a success
+                onFailure(active, run, maxAttempts, new RetryableJobException("TIMEOUT", "max run time exceeded"));
+                return;
+            }
             gate.pass(); // a pause can land between the last effect and the commit
+            if (!active.takeCommit()) {
+                return; // the hard stop already recorded this attempt
+            }
             if (protocol.commitSuccess(run.runId(), run.token())) {
                 metrics.outcome("success");
             } else {
                 staleCommit();
             }
         } catch (LeaseLostException e) {
-            leaseLost(e.reason());
+            if (!active.hardStopped()) { // after a hard stop the fenced writes are meant to fail
+                leaseLost(e.reason());
+            }
         } catch (NodeGate.NodeKilledException e) {
             // the process is gone: nothing more happens on this node
         } catch (Throwable failure) {
@@ -135,7 +151,7 @@ final class RunExecutor {
     }
 
     private void onFailure(ActiveRun active, ClaimedRun run, int maxAttempts, Throwable failure) {
-        if (gate.isKilled()) {
+        if (gate.isKilled() || active.hardStopped()) {
             return;
         }
         if (active.lost() != null) {
@@ -154,6 +170,9 @@ final class RunExecutor {
         Thread.interrupted(); // the commit must not be cut short by the interrupt that stopped the handler
         try {
             gate.pass();
+            if (!active.takeCommit()) {
+                return; // the hard stop already recorded this attempt
+            }
             if (!protocol.commitFailure(run.runId(), run.token(), decision)) {
                 staleCommit();
                 return;
@@ -172,6 +191,46 @@ final class RunExecutor {
         metrics.outcome(outcome);
         log.info("attempt failed: {} -> {}", classifier.errorCodeOf(cause),
                 decision instanceof RunFailure.Retry ? "RETRY_WAIT" : "DEAD_LETTERED");
+    }
+
+    /**
+     * The handler is still running one renew interval after its max run time: it ignored the
+     * interrupt. Records the attempt as {@code TIMEOUT} (retry or dead letter, as for any timeout)
+     * with the run's own fenced commit, which also frees its slot; renewals stop. Runs on its own
+     * virtual thread, never on the worker.
+     */
+    private void hardStop(ActiveRun active) {
+        ClaimedRun run = active.run();
+        if (!active.takeCommit()) {
+            return; // the worker finished in the meantime
+        }
+        active.hardStop();
+        MDC.put("nodeId", nodeId);
+        MDC.put("runId", String.valueOf(run.runId()));
+        MDC.put("jobId", run.jobId().toString());
+        MDC.put("tenantId", run.tenantId().value());
+        MDC.put("fencingToken", run.token().toHeader());
+        MDC.put("attempt", String.valueOf(run.attempt()));
+        try {
+            gate.pass();
+            RunFailure decision = retryDecider.onFailure(new RetryableJobException("TIMEOUT", "max run time exceeded"),
+                    run.attempt(), spec(run).maxAttempts());
+            if (!protocol.commitFailure(run.runId(), run.token(), decision)) {
+                staleCommit();
+                return;
+            }
+            metrics.outcome("timeout");
+            log.warn("handler ignored the max-run-time stop; attempt recorded as TIMEOUT -> {}, worker abandoned",
+                    decision instanceof RunFailure.Retry ? "RETRY_WAIT" : "DEAD_LETTERED");
+        } catch (NodeGate.NodeKilledException e) {
+            // the process is gone
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (RuntimeException e) {
+            log.warn("hard-stop commit failed; the lease will expire and the run is retried: {}", e.toString());
+        } finally {
+            MDC.clear();
+        }
     }
 
     private JobSpec spec(ClaimedRun run) {

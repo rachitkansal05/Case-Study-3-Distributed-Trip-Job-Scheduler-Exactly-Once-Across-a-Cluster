@@ -28,7 +28,10 @@ import java.util.UUID;
  * coalesced_count = n} and skips the rest; {@code FIRE_NOW} fires all in order.
  *
  * <p>Retries ({@code RETRY_WAIT}) are never treated as misfires: the occurrence already started
- * once, and {@code RETRY_WAIT -> SKIPPED} is not a legal transition.
+ * once, and {@code RETRY_WAIT -> SKIPPED} is not a legal transition. Runs with {@code
+ * misfire_exempt} (operator replays of dead letters, manual triggers) are explicit requests to run:
+ * they never trigger a decision, are never part of one (so never skipped or coalesced), and start
+ * like on-time runs.
  *
  * <p>Locks are run rows only, taken after the claim's slot locks (I2) and with {@code SKIP
  * LOCKED}; a run of the job that another claimer holds at that instant is simply not part of the
@@ -37,8 +40,8 @@ import java.util.UUID;
 final class MisfireResolver {
 
     /** A locked candidate row of the claim. */
-    record Candidate(long runId, UUID jobId, String state, Instant scheduledAt, String misfire,
-                     Duration threshold, Instant dbNow) {
+    record Candidate(long runId, UUID jobId, String state, boolean misfireExempt, Instant scheduledAt,
+                     String misfire, Duration threshold, Instant dbNow) {
     }
 
     /** A run to start, with the coalesced count to store ({@code null} keeps the column). */
@@ -47,10 +50,11 @@ final class MisfireResolver {
 
     /* I1, I2: the job's due SCHEDULED occurrences, locked after the slots (we already hold the
        candidate's own lock; SKIP LOCKED never makes us wait for another claimer). scheduled_at <=
-       the DB time the candidates were read at, as MisfirePolicy requires. */
+       the DB time the candidates were read at, as MisfirePolicy requires. Exempt runs (replays,
+       manual triggers) are not occurrences the policy may skip or coalesce. */
     private static final String JOB_DUE = """
             SELECT id, scheduled_at FROM job_run
-             WHERE job_id = ? AND state = 'SCHEDULED'
+             WHERE job_id = ? AND state = 'SCHEDULED' AND NOT misfire_exempt
                AND due_at <= clock_timestamp() AND scheduled_at <= ?
              ORDER BY scheduled_at
                FOR UPDATE SKIP LOCKED
@@ -89,7 +93,7 @@ final class MisfireResolver {
                     break;
                 }
                 Resolution res = resolved.get(cand.jobId());
-                if (res == null && RunState.SCHEDULED.name().equals(cand.state())
+                if (res == null && RunState.SCHEDULED.name().equals(cand.state()) && !cand.misfireExempt()
                         && MisfirePolicy.isMisfire(cand.scheduledAt(), cand.dbNow(), cand.threshold())) {
                     res = resolveJob(cand);
                     resolved.put(cand.jobId(), res);

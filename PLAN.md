@@ -211,6 +211,7 @@ CREATE TABLE job_run (
   checkpoint    JSONB,                      -- e.g. {"nextItem": 650} for chunked jobs
   coalesced_count INT NOT NULL DEFAULT 1,
   last_error    TEXT,                       -- error code + sanitised message only
+  misfire_exempt BOOLEAN NOT NULL DEFAULT false, -- replay / manual trigger: never skipped or coalesced (V202)
   UNIQUE (job_id, scheduled_at),            -- materialisation is idempotent
   UNIQUE (idem_key),
   -- a running run's slot must be a real slot row of its own tenant
@@ -225,6 +226,7 @@ CREATE UNIQUE INDEX one_run_per_slot ON job_run (tenant_id, slot_no) WHERE state
 CREATE INDEX run_due     ON job_run (partition_id, tenant_id, priority, due_at) WHERE state IN ('SCHEDULED','RETRY_WAIT');
 CREATE INDEX run_claim_order ON job_run (tenant_id, priority, due_at, id) WHERE state IN ('SCHEDULED','RETRY_WAIT'); -- V201
 CREATE INDEX run_expired ON job_run (lease_until)                     WHERE state = 'RUNNING';  -- orphan sweep
+CREATE INDEX run_finished ON job_run (finished_at) WHERE state IN ('SUCCEEDED','SKIPPED','CANCELLED'); -- V203, retention (§17)
 
 CREATE TABLE partition_lease (
   partition_id  SMALLINT PRIMARY KEY,       -- 128 rows, one per partition
@@ -354,7 +356,7 @@ Nothing is claimed that cannot start right away, so leases are never held by job
 
 - **Chunked handlers** (1,200 pickup alerts) send in chunks of 50 and checkpoint after each chunk, using the same fenced predicate. Item key: `{idemKey}:{employeeId}`.
 
-- A hard stop at `max_run_time` marks the attempt failed (timeout), and normal retry applies.
+- A hard stop at `max_run_time` interrupts the handler and refuses further effects; the attempt fails with `TIMEOUT` and normal retry applies. A handler that returns anyway is still a timeout, never a success. One that ignores the interrupt is abandoned one renew interval later: the engine commits `TIMEOUT` for it under the fenced predicate (which frees its slot) and stops renewing its lease; the thread's later writes match 0 rows.
 
 ### Commit (fenced)
 
@@ -390,7 +392,7 @@ Every checkpoint, renew and commit requires a matching token *and* a lease that 
 
 #### Orphan sweep
 
-Every 500 ms, in any partition: an expired `RUNNING` run is reaped and restarted in one claim transaction, in the same slot, with a higher token, from its checkpoint. Takeover ≤ 10 s lease + 0.5 s sweep + 0.2 s claim = 10.7 s.
+Every 500 ms, in any partition: an expired `RUNNING` run is reaped and restarted in one claim transaction, in the same slot, with a higher token, from its checkpoint. Takeover ≤ 10 s lease + 0.5 s sweep + 0.2 s claim = 10.7 s, counted from the dead owner's last successful renewal (the expired `lease_until` minus the lease), which is what `scheduler_orphan_takeover_time_seconds` records (§14).
 
 ---
 
@@ -420,12 +422,14 @@ A run has *misfired* when it is claimed with `now() − scheduled_at > misfire_t
 | `SKIP` | Missed runs → `SKIPPED`; the next future occurrence runs normally | "Cab assigned" alerts: an alert after pickup time is useless |
 | `COALESCE` | Newest missed run fires once with `coalesced_count = 3`; the other two → `SKIPPED` | Roster regeneration: only the latest state matters |
 
+**Replays and manual triggers are exempt.** An operator replay and a manual trigger are explicit requests to run, so their run carries `misfire_exempt = true` (V202). The claim never applies a policy to such a run and leaves it out of the job's misfire decision, so it is never skipped or coalesced; the job's ordinary occurrences still follow the policy. A replay keeps its original `scheduled_at` (the occurrence the handler works on, and part of its key), which is why a flag is used instead of moving `scheduled_at`. Fire lag is recorded only for a run's first start, so a replay does not report its old lag again (`ReplayMisfireIT`).
+
 ### Retries
 
 - Backoff: <code>delay = random(0, min(cap, base · 2<sup>attempt</sup>))</code> ("full jitter"), base 2 s, cap 5 min. Retry sets `state = RETRY_WAIT, due_at = now() + delay`, so it waits in the same index and needs no extra queue.
 - Errors are classified by type: `RetryableJobException` (timeouts, 5xx) is retried; `PermanentJobException` (bad payload, 4xx) is dead-lettered immediately.
 - A 409 for an outdated token, or a fenced write that updates 0 rows, means **lease lost**, not job failure: the handler stops and the attempt doesn't count toward `max_attempts`. Lease-lost attempts have their own limit of 20. After that the run is dead-lettered with `FENCING_CONFLICT` and an alert fires, so a fencing bug can't loop forever.
-- After `max_attempts`, the run becomes `DEAD_LETTERED` and a row is written to `dead_letter`. Operators can list, filter and inspect error codes (never payload PII), and replay. Replay keeps the **same idempotency key**, so any items that were delivered before the run died are not sent again.
+- After `max_attempts`, the run becomes `DEAD_LETTERED` and a row is written to `dead_letter`. Operators can list, filter and inspect error codes (never payload PII), and replay. Replay keeps the **same idempotency key**, so any items that were delivered before the run died are not sent again, and the replayed run runs whatever the misfire policy (see above).
 
 ---
 
@@ -526,6 +530,7 @@ If the freeze lands inside a claim, checkpoint or commit transaction, the frozen
 | Duplicate manual trigger (double click) | One run created; the second call returns the same run id | Client `Idempotency-Key` header → `idem_key = jobId:manual:{key}` unique |
 | Clock skew on a node | Nothing (only node log timestamps are off) | Due and lease checks run on the DB clock |
 | Poison payload | Run in DLQ with error code `INVALID_PAYLOAD` | Permanent failure → immediate dead-letter; operator fixes the job and replays |
+| Handler runs past `max_run_time` or hangs | That run is retried later (`TIMEOUT`), then dead-lettered | Interrupt at `max_run_time`; a handler that ignores it is abandoned one renew interval later, its `TIMEOUT` committed by the engine and its slot freed (§07) |
 | Tenant floods 50k jobs | That tenant drains at its cap; others unaffected | Tenant slots + DRR (§10) |
 
 ### Failover requirements (production)
@@ -564,7 +569,7 @@ There is no list-jobs endpoint and no `GET /api/v1/tenants/{t}`.
 
 - **EMPLOYEE** can read schedules for their tenant. **ADMIN** manages one tenant. **OPERATOR** is the platform on-call role: it works across tenants, but only on operational data (state, counts, error codes), never payloads.
 - **Tenant isolation:** `tenant_id` comes only from the JWT claim, never from request bodies. Every repository method takes a `TenantScope` parameter and adds `WHERE tenant_id = ?`. Cross-tenant reads and writes return **404, not 403**, so the response does not reveal that a job exists. A wrong role is a 403 `FORBIDDEN` (it reveals nothing about data) and a missing or bad token a 401. Postgres row-level security would be a second guard; it is not implemented.
-- **Retry-safe writes:** the manual trigger **requires** an `Idempotency-Key` header; `POST /jobs`, pause, resume, cap changes and replay accept an optional one. `POST /tenants` takes none (a repeat gets 409 `TENANT_EXISTS`). Keys are namespaced per tenant and stored in `api_idempotency`, honoured for 24 h; `IdempotencyPurge` deletes older records every 10 minutes in batches of 1,000 (`scheduler.api.idempotency-purge.interval` / `.batch-size` / `.max-batches`), safe on all nodes at once. A replayed response carries `Idempotent-Replayed: true`. A client that retries after an unclear failure, such as a commit lost in a failover, gets the original result and no second action. Reusing a key with a different request returns 409 `IDEMPOTENCY_KEY_REUSED`. A manual run is also deduplicated by its run key `jobId:manual:{key}`, which outlives the 24 h record.
+- **Retry-safe writes:** the manual trigger **requires** an `Idempotency-Key` header; `POST /jobs`, pause, resume, cap changes and replay accept an optional one. `POST /tenants` takes none (a repeat gets 409 `TENANT_EXISTS`). Keys are namespaced per tenant and stored in `api_idempotency`, honoured for 24 h; `IdempotencyPurge` deletes older records every 10 minutes in batches of 1,000 (`scheduler.api.idempotency-purge.interval` / `.batch-size` / `.max-batches`), safe on all nodes at once. A replayed response carries `Idempotent-Replayed: true`. A client that retries after an unclear failure, such as a commit lost in a failover, gets the original result and no second action. Reusing a key with a different request returns 409 `IDEMPOTENCY_KEY_REUSED`. A manual run is also deduplicated by its run key `jobId:manual:{key}`, which outlives the 24 h record (until the run is purged, 7 days after it finished, §17).
 
 ---
 
@@ -584,13 +589,13 @@ There is no list-jobs endpoint and no `GET /api/v1/tenants/{t}`.
 | scheduler_tenant_cap{tenant,kind="configured\|effective"} | Gauge | Effective > configured for longer than the tenant's longest max run time |
 | scheduler_lease_lost_total{reason} | Counter: `stale_409`, `fenced_write_0_rows`, `self_fence` | More than 5 for one reason in 5 min |
 | scheduler_dead_letters_total{error_code} | Counter: runs dead-lettered, by error code | Any `FENCING_CONFLICT` in 15 min |
-| scheduler_orphan_takeovers_total, scheduler_orphan_takeover_time_seconds | Counter + histogram of lease expiry → restart (DB time), with buckets at 10.7 s and 11.2 s | p99 > 11.2 s |
+| scheduler_orphan_takeovers_total, scheduler_orphan_takeover_time_seconds | Counter + histogram of the dead owner's last lease renewal → restart (DB time), with buckets at 10.7 s and 11.2 s | p99 > 11.2 s |
 | scheduler_lease_renew_failures_total | Counter | Rate > 0 |
 | scheduler_claim_batch_seconds | Timer | p99 > 100 ms (DB is the bottleneck) |
 
 These are 13 Prometheus alert rules in `ops/prometheus/alerts.yml`: the twelve rows above that have an alert, plus `SchedulerTargetDown` (`up == 0` for a node or the sink, 30 s). Each rule has a `runbook_url` into `docs/RUNBOOK.md`. The demo has no Alertmanager; firing alerts are listed at Prometheus `/alerts`. `AlertRulesTest`, `GrafanaDashboardTest` and `RunbookTest` check the files against `ops/metric-names.txt`, and `MetricsIT` (scheduler) and `OpsMetricNamesIT` (sink) prove every listed name is really exported. Prometheus also scrapes the sink (`sink_deliveries_total{outcome}`, `sink_delivery_latency_seconds`).
 
-Note that `scheduler_orphan_takeover_time_seconds` measures lease expiry → restart, which should stay under about 0.7 s (sweep + claim); the 10.7 s bound counts from the crash, so it also includes the up to 10 s left on the lease.
+`scheduler_orphan_takeover_time_seconds` is measured on the DB clock from the dead owner's last successful lease renewal (the expired `lease_until` minus the 10 s lease: the last moment it was proven alive) to the takeover claim. That is the interval the 10.7 s bound limits, so the 11.2 s alert compares like with like; it is at most one renewal interval (3 s) longer than the time from the crash itself. `NodeCrashIT` checks the recorded value against its own measurement.
 
 A Grafana dashboard is provisioned by compose (anonymous read-only access; admin / admin). Logs are JSON lines (profile `json`) with MDC fields `traceId` and `tenantId` per request, and `nodeId, runId, jobId, tenantId, fencingToken, attempt, idemKeyHash` while a run executes (`LoggingIT`). Payloads are never logged. `PiiMaskingConverter` (plain text) and `PiiValueMasker` (every JSON string value, including MDC and stack traces) mask phone, email and lat/long patterns as a last line of defence; `PiiMaskingTest` feeds them real-looking samples.
 
@@ -659,26 +664,26 @@ trip-job-scheduler/
 
 | Rule | Test | Kind |
 |---|---|---|
-| R1 | `JobDefinitionTest` (one-off vs cron rules, bounds), `JobValidationIT` (every invalid `POST /jobs` body is a 400 naming the field; defaults stored). The hard stop at `max_run_time` (`TIMEOUT`, retryable) is implemented in `RunEffectContext` / `RunExecutor` but has no dedicated test | Unit + API |
+| R1 | `JobDefinitionTest` (one-off vs cron rules, bounds), `JobValidationIT` (every invalid `POST /jobs` body is a 400 naming the field; defaults stored). `MaxRunTimeIT`: a handler past `max_run_time` is interrupted on every attempt and dead-lettered as `TIMEOUT` after `max_attempts` (no lease loss); a timed-out attempt is retried and can succeed; a handler that swallows the interrupt is not committed as a success; one that ignores it is hard-stopped (`TIMEOUT` committed, slot reused, its late effect refused) | Unit + API + Integration |
 | R2 | `WallClockResolverTest`: NY 2026-03-08 02:30 → 07:00Z; NY 2026-11-01 01:30 → one run at 05:30Z; London; Kolkata. `NextFireTimesTest` across both 2026 transitions, `CronScheduleTest`, `NextFireCalculatorTest`, `MaterializerIT` (DST gap and overlap against real Postgres) | Unit + Integration |
 | R3 | `ExactlyOnceEffectIT`: 3 in-process nodes on embedded Postgres, 10,000 jobs over 10 tenants, random handler failures after the effect was sent; the sink sees 10,000 distinct keys, none twice, and more than 10,000 attempts. `ConcurrentDeliveryIT` (sink: 50 threads, the same 20 keys, mixed tokens) | **Concurrency** |
 | R4 | `FencingIT` (stale renew, checkpoint and commit → 0 rows; stale sink call → 409), `ClaimRaceIT` (32 threads, 1,000 runs, each claimed once), `SlotStealRaceIT` (both interleavings forced with latches), `LeaseResurrectionIT` (expired, untaken lease → 0 rows; lease-lost limit → `FENCING_CONFLICT`) | **Concurrency** |
 | R4 | `FencingTokenTest` (pair order across epochs, timelines above 65,536), `StaleTokenClassificationTest` (409 doesn't count as an attempt; 20 lease losses → `FENCING_CONFLICT`), `FenceDecisionTest` (sink) | Unit |
 | R4 | `FailoverFencingIT` (primary + synchronous standby, kill primary, promote) and `StrictSyncIT` (standby gone → commits block): Testcontainers, skipped without Docker, so **not run locally**. `EpochGuardIT` (stub sink) and `ClusterGenerationGuardIT` (loadgen, real sink): epoch lower than the sink's → node refuses to start | **Failure injection** |
 | R5 | `PartitionAssignerTest`: determinism, minimal movement on join/leave; balance max/min ≤ 1.3 for the compose node ids; over 10,000 random 3-node sets the mean is 1.31 and the test asserts mean < 1.40 with more than 45 % ≤ 1.3 (rendezvous counts are multinomial, so balance is a statistical bound, not exact). `PartitionPlannerTest`. `RebalanceIT`: real timings, kill one of 3 nodes right after it renews its partition leases → all 128 partitions owned within 7 s | Unit + Integration |
-| R6 | `MisfirePolicyTest`: 3 missed hourly runs → FIRE_NOW 3, SKIP 0, COALESCE 1 with count 3. `MisfireIT`: the same through the real claim | Unit + Integration |
+| R6 | `MisfirePolicyTest`: 3 missed hourly runs → FIRE_NOW 3, SKIP 0, COALESCE 1 with count 3. `MisfireIT`: the same through the real claim. `ReplayMisfireIT`: `SKIP` and `COALESCE` runs replayed an hour late, and a manual trigger delayed an hour, each run exactly once while ordinary misfired siblings are still skipped or coalesced; no fire lag for the replay | Unit + Integration |
 | R7 | `TenantFairnessIT`: tenant A 50,000 + tenant B 20 at the same instant, 3 nodes; B p99 lag < 1 s. `DrainRateIT`: one tenant, cap 32, ≥ 600 runs/s | **Concurrency** |
 | R7 | `TenantCapIT`: cap 5, 3+ nodes, 1,000 runs, random kills, freezes, joins and leaves; every 10 ms, leased running runs per tenant ≤ 5 and sink requests with a valid token in flight ≤ 5. **No tolerance.** `LockOrderIT`: claims, commits, the sweep and compaction under load produce no deadlocks | **Concurrency** |
 | R7 | `SchemaIT` (the planned `SlotConstraintTest`): slot outside the tenant's set, another tenant's slot, running with NULL slot, deleting a slot in use → each rejected by the DB. `CapReductionIT`, `CapIncreaseIT`, `CapApiIT`, `ClaimQueryPlanIT`, `DeficitRoundRobinDispatcherTest`, `CapChangePlannerTest` | Unit + Integration |
 | R8 | `BackoffPolicyTest` (bounds, jitter distribution), `RetryDeciderTest`, `RetryToDeadLetterIT` (retryable → 5 attempts → DLQ; permanent and invalid payload → DLQ after one; lease losses use no attempts; replay keeps the idem key) | Unit + Integration |
-| R9 | `OpsApiIT`: pause/resume, next fire times, manual trigger dedup by header, delete cancels only unstarted runs, replay reuses the row and key. `ApiIdempotencyIT`, `IdempotencyPurgeIT`, `CachingIT` | API |
+| R9 | `OpsApiIT`: pause/resume, next fire times, manual trigger dedup by header, delete cancels only unstarted runs, replay reuses the row and key. `ApiIdempotencyIT`, `IdempotencyPurgeIT`, `CachingIT`. `RunPurgeIT`: only finished runs past the 7-day retention are deleted, in bounded batches; due, running and dead-lettered runs stay; a replayed dead letter goes with its run; three concurrent purgers delete each run once | API + Integration |
 | R10 | `MetricsIT` (every metric and label exported; state gauges equal DB counts), `EngineMetricsTest`, `AlertRulesTest`, `GrafanaDashboardTest`, `RunbookTest`, `ComposeConfigTest`, `OpsMetricNamesIT` (sink) | Integration + Unit |
-| R11 | `NodeCrashIT` (in-JVM kill: worker threads stopped and the connection pool closed, right after a lease renewal; no Toxiproxy), `EndToEndKillIT` (loadgen: real sink over HTTP in its own JVM); assert 1,200 deliveries, 0 duplicates, takeover ≤ 11.2 s. `chaos/kill-during-alerts.sh` for compose (syntax-checked only) | **Failure injection** |
+| R11 | `NodeCrashIT` (in-JVM kill: worker threads stopped and the connection pool closed, right after a lease renewal; no Toxiproxy), `EndToEndKillIT` (loadgen: real sink over HTTP in its own JVM); assert 1,200 deliveries, 0 duplicates, takeover ≤ 11.2 s, and (`NodeCrashIT`) a recorded `scheduler_orphan_takeover_time_seconds` between 10 s and 11.2 s that matches the measured interval. `chaos/kill-during-alerts.sh` for compose (syntax-checked only) | **Failure injection** |
 | R12 | `GcPauseIT` (short timings: freeze past the lease → sink 409 and 0-row commit), `EndToEndFreezeIT` (production timings, 30 s freeze, real sink: the in-flight send gets 409, the fenced commit returns false, 1,200 delivered once). `chaos/freeze-during-alerts.sh` (`docker pause` 30 s; syntax-checked only) | **Failure injection** |
 | R13 | `InProcessBench` (loadgen test scope, `-Pbench`): 3 nodes in one JVM + the real sink + embedded Postgres with fsync on. It ran **in-process, not on compose**; the compose mode (`LoadGenMain`) exists but has not been run against a live stack. Numbers in `docs/BENCHMARK.md` | Benchmark |
 | R14 | `TenantIsolationIT` (A's token on B's job → 404), `RoleMatrixIT`, `DevTokenIT`, `DevTokenDisabledIT`, `PiiMaskingTest`, `LoggingIT`, `ErrorResponseTest` (no payload or stack trace in body); sink `PayloadPrivacyIT`, `SinkLogMaskingTest` | API + Unit |
 
-On the build machine: 843 tests, 841 passed, 2 skipped (the Docker-gated ones), 0 failures.
+On the build machine: 855 tests, 853 passed, 2 skipped (the Docker-gated ones), 0 failures.
 
 ---
 
@@ -710,7 +715,7 @@ Measured on one 6-core laptop with all three nodes, the sink and Postgres on it 
 - **Claim:** O(T · log R + b) per poll, where T is tenants with free slots, R is due runs in owned partitions (partial index), and b is the batch size. Memory per node is O(workers + claimed batch), not O(jobs).
 - **Assignment:** O(P · N) hashes per membership change (128 × 3 = 384, microseconds).
 - **Materialisation:** O(occurrences in a 15-min horizon); one cron `next()` is O(1) amortised.
-- **Storage:** O(jobs + runs kept). There is no retention job for finished runs yet, so `job_run` grows without bound; a partition-by-day retention job (drop days older than 7) is the planned fix. `api_idempotency` is purged after 24 h by `IdempotencyPurge`.
+- **Storage:** O(jobs + runs kept). `RunPurge` deletes finished runs (`SUCCEEDED`, `SKIPPED`, `CANCELLED`) 7 days after they finish: every 10 minutes on every node, 1,000 per transaction under `FOR UPDATE SKIP LOCKED`, oldest first through the partial index `run_finished` (`scheduler.run-purge.retention` / `.interval` / `.batch-size` / `.max-batches`). Dead-lettered runs stay until replayed, and a replayed dead letter's row is deleted with its run. `api_idempotency` is purged after 24 h by `IdempotencyPurge`. At much larger volumes, partitioning `job_run` by day (drop whole days) would make retention cheaper than row deletes.
 
 ### Where it stops scaling
 

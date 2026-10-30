@@ -38,8 +38,11 @@ public class JobRunRepository {
 
     /**
      * Inserts a manual run due now ({@code scheduled_at = due_at = clock_timestamp()}), copying
-     * partition, priority, version and max run time from the job. Returns empty when a run with
-     * this {@code idemKey} already exists (the {@code UNIQUE (idem_key)} constraint deduplicates).
+     * partition, priority, version and max run time from the job. The run is {@code
+     * misfire_exempt}: a trigger is an explicit request to run, so a manual run delayed past the
+     * misfire threshold (tenant paused, backlog) still runs, and is never coalesced with the job's
+     * scheduled occurrences. Returns empty when a run with this {@code idemKey} already exists (the
+     * {@code UNIQUE (idem_key)} constraint deduplicates).
      */
     public Optional<Long> insertManualRun(TenantScope scope, JobRow job, String idemKey) {
         if (!scope.includes(job.tenantId())) {
@@ -47,9 +50,9 @@ public class JobRunRepository {
         }
         return jdbc.sql("""
                         INSERT INTO job_run (job_id, tenant_id, partition_id, priority, job_version, max_run_time,
-                                             scheduled_at, due_at, idem_key, state)
+                                             scheduled_at, due_at, idem_key, state, misfire_exempt)
                         SELECT j.id, j.tenant_id, j.partition_id, j.priority, j.version, j.max_run_time,
-                               clock_timestamp(), clock_timestamp(), :idemKey, 'SCHEDULED'
+                               clock_timestamp(), clock_timestamp(), :idemKey, 'SCHEDULED', true
                           FROM job j
                          WHERE j.id = :jobId AND j.tenant_id = :tenant
                         ON CONFLICT (idem_key) DO NOTHING

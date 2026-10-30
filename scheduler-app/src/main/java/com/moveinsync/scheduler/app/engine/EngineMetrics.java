@@ -16,6 +16,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -42,9 +43,10 @@ import java.util.concurrent.atomic.AtomicLong;
  *       {@link LeaseLostReason#metricTag()}.
  *   <li>{@code scheduler.orphan.takeovers} [{@code scheduler_orphan_takeovers_total}] and {@code
  *       scheduler.orphan.takeover.time} [{@code scheduler_orphan_takeover_time_seconds}] histogram
- *       (time from lease expiry to restart, DB time). Buckets include the exact takeover bounds
- *       10.7 s (lease 10 s + sweep 0.5 s + claim 0.2 s) and 11.2 s (the documented alert
- *       threshold), so those alerts read a bucket instead of interpolating.
+ *       (DB time from the dead owner's last successful lease renewal, the last moment it was
+ *       proven alive, to the restart; at least one run lease). Buckets include the exact takeover
+ *       bounds 10.7 s (lease 10 s + sweep 0.5 s + claim 0.2 s) and 11.2 s (the alert threshold),
+ *       so those alerts read a bucket instead of interpolating.
  *   <li>{@code scheduler.dead.letters} [{@code scheduler_dead_letters_total}], tag {@code
  *       error_code}: runs dead-lettered (committed), e.g. {@code FENCING_CONFLICT} at the lease-lost
  *       limit.
@@ -65,10 +67,12 @@ public final class EngineMetrics implements ClaimObserver {
         Duration.ofMillis(100), Duration.ofMillis(250), Duration.ofMillis(500), Duration.ofSeconds(1),
         Duration.ofSeconds(2), Duration.ofSeconds(5), Duration.ofSeconds(10), Duration.ofSeconds(30)};
 
+    /* A takeover always takes at least one run lease (10 s by default), so the buckets are dense
+       around lease + sweep + claim; the low ones serve short test leases. */
     private static final Duration[] TAKEOVER_SLO = {
-        Duration.ofMillis(100), Duration.ofMillis(500), Duration.ofSeconds(1), Duration.ofSeconds(2),
-        Duration.ofSeconds(5), Duration.ofMillis(10_700), Duration.ofSeconds(11), Duration.ofMillis(11_200),
-        Duration.ofSeconds(30)};
+        Duration.ofSeconds(1), Duration.ofSeconds(2), Duration.ofSeconds(5), Duration.ofSeconds(10),
+        Duration.ofMillis(10_500), Duration.ofMillis(10_700), Duration.ofSeconds(11), Duration.ofMillis(11_200),
+        Duration.ofSeconds(12), Duration.ofSeconds(15), Duration.ofSeconds(30)};
 
     private final MeterRegistry registry;
     private final String nodeId;
@@ -98,7 +102,7 @@ public final class EngineMetrics implements ClaimObserver {
         this.orphanTakeovers = Counter.builder("scheduler.orphan.takeovers")
                 .description("Expired runs restarted by the orphan sweep").register(registry);
         this.orphanTakeoverTime = Timer.builder("scheduler.orphan.takeover.time")
-                .description("Time from run lease expiry to orphan restart (DB time)")
+                .description("Time from the dead owner's last lease renewal to the orphan restart (DB time)")
                 .serviceLevelObjectives(TAKEOVER_SLO).register(registry);
         registry.gauge("scheduler.partitions.owned", Tags.of("node", nodeId), partitionsOwned);
         registry.gauge("scheduler.queue.depth", Tags.empty(), queueDepth);
@@ -147,9 +151,9 @@ public final class EngineMetrics implements ClaimObserver {
     }
 
     @Override
-    public void onOrphanTakeover(ClaimedRun run, Duration sinceExpiry) {
+    public void onOrphanTakeover(ClaimedRun run, Duration sinceLastRenewal) {
         orphanTakeovers.increment();
-        orphanTakeoverTime.record(sinceExpiry);
+        orphanTakeoverTime.record(sinceLastRenewal);
     }
 
     // ------------------------------------------------------------------ engine events
@@ -210,6 +214,11 @@ public final class EngineMetrics implements ClaimObserver {
 
     public double orphanTakeoverCount() {
         return orphanTakeovers.count();
+    }
+
+    /** Sum of all recorded takeover times (with one takeover: its value). */
+    public Duration orphanTakeoverTimeTotal() {
+        return Duration.ofNanos((long) orphanTakeoverTime.totalTime(TimeUnit.NANOSECONDS));
     }
 
     public double outcomeCount(String outcome) {
