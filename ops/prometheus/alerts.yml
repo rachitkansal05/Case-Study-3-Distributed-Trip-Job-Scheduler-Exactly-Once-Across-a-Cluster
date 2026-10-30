@@ -111,7 +111,7 @@ groups:
           severity: critical
           summary: Orphan takeover p99 above the 11.2 s bound
         annotations:
-          description: "p99 time from lease expiry to restart is {{ $value | humanizeDuration }} (bound 11.2 s)."
+          description: "p99 time from a dead owner's last lease renewal to the restart is {{ $value | humanizeDuration }} (bound 10.7 s, alert at 11.2 s)."
           runbook_url: docs/RUNBOOK.md#schedulerorphantakeoverslow
 
   - name: scheduler-cluster

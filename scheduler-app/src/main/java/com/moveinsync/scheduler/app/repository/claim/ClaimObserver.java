@@ -33,9 +33,11 @@ public interface ClaimObserver {
     /**
      * The orphan sweep took over an expired run.
      *
-     * @param sinceExpiry how long after its lease expired it was restarted (DB time)
+     * @param sinceLastRenewal time from the dead owner's last successful lease renewal (or claim),
+     *     i.e. expired {@code lease_until} minus the run lease, to the restart; DB time. This is
+     *     the owner-loss to restart interval the takeover bound (lease + sweep + claim) limits.
      */
-    default void onOrphanTakeover(ClaimedRun run, Duration sinceExpiry) {
+    default void onOrphanTakeover(ClaimedRun run, Duration sinceLastRenewal) {
     }
 
     /** An expired holder was reaped (lease lost by its node). */

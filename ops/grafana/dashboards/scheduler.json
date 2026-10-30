@@ -1709,7 +1709,7 @@
       "id": 26,
       "type": "timeseries",
       "title": "Orphan takeover time p99",
-      "description": "Time from owner loss to takeover by a survivor. Red line: 11.2 s budget (lease TTL + detection).",
+      "description": "Time from the dead owner's last successful lease renewal (the last moment it was proven alive) to the restart by a survivor, DB clock. Normally 10-10.7 s (10 s lease + 0.5 s sweep + claim). Red line: 11.2 s alert threshold.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"

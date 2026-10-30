@@ -25,10 +25,12 @@ import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
 /**
- * R11 (plan sections 06.6, 11 and 16), REAL timings (run lease 10 s, renew 3 s, sweep 1 s): kill -9
- * the node sending 1,200 pickup alerts mid-send, right after its last successful run-lease
+ * R11 (plan sections 06.6, 11 and 16), REAL timings (run lease 10 s, renew 3 s, sweep 500 ms): kill
+ * -9 the node sending 1,200 pickup alerts mid-send, right after its last successful run-lease
  * renewal (worst case). Another node takes the run over within 11.2 s (DB clock), resumes from
- * the last checkpoint, and every employee gets exactly one alert.
+ * the last checkpoint, and every employee gets exactly one alert. The survivor's {@code
+ * scheduler_orphan_takeover_time_seconds} records the same interval the test measures (last
+ * renewal to takeover, DB clock), between one run lease and the 11.2 s alert threshold.
  */
 class NodeCrashIT {
 
@@ -167,6 +169,14 @@ class NodeCrashIT {
             assertThat(resent).isPositive().isLessThanOrEqualTo(CHUNK + 2);
             assertThat(nodes.stream().filter(n -> n != victim).mapToDouble(n -> n.metrics().orphanTakeoverCount())
                     .sum()).isEqualTo(1.0);
+            // the histogram measures last renewal -> takeover, the interval the 11.2 s alert bounds
+            Duration recorded = nodes.stream().filter(n -> n != victim)
+                    .map(n -> n.metrics().orphanTakeoverTimeTotal()).reduce(Duration.ZERO, Duration::plus);
+            System.out.printf("NodeCrashIT: scheduler_orphan_takeover_time_seconds recorded %d ms%n",
+                    recorded.toMillis());
+            assertThat(recorded).as("recorded takeover time").isBetween(RUN_LEASE, TAKEOVER_BOUND);
+            assertThat(recorded.minus(sinceRenewal).abs()).as("recorded vs measured since the last renewal")
+                    .isLessThanOrEqualTo(Duration.ofMillis(50));
         }
     }
 

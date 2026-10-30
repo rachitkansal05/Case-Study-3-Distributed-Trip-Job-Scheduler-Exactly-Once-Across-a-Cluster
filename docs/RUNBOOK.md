@@ -473,13 +473,13 @@ sum by (node) (increase(scheduler_lease_renew_failures_total[2m])) > 0
 
 ## SchedulerOrphanTakeoverSlow
 
-**Severity:** critical, fires at once. Takeover bound from a crash: 10.7 s (10 s lease + 0.5 s sweep + 0.2 s claim); the alert threshold is 11.2 s, the bound of the original 1 s sweep.
+**Severity:** critical, fires at once. Takeover bound: 10.7 s (10 s lease + 0.5 s sweep + 0.2 s claim); the alert threshold is 11.2 s, which leaves 0.5 s of slack for a busy database.
 
 ```promql
 histogram_quantile(0.99, sum by (le) (rate(scheduler_orphan_takeover_time_seconds_bucket[10m]))) > 11.2
 ```
 
-**What it means.** The histogram measures lease expiry to restart (DB time), not crash to restart. Normally that is under about 0.7 s (one 500 ms sweep plus the claim), so the alert fires only when orphans wait more than 11.2 s *after* their lease expired, which is far past the bound. Buckets are 5, 10.7, 11, 11.2 and 30 s, so a value just over 11.2 means "some takeovers fell in the 11.2-30 s bucket". For an early warning, look at `expired_for` in the [stuck RUNNING runs](#stuck-running-runs) query.
+**What it means.** The histogram measures, on the DB clock, the time from the dead owner's last successful lease renewal (expired `lease_until` minus the 10 s run lease: the last moment that node was proven alive) to the restart on a survivor. That is the interval the 10.7 s bound limits: the lease runs out 10 s after the renewal, then the sweep (every 500 ms) and the claim restart the run. A crash happens at most one renewal interval (3 s) after the last renewal, so the time from the crash itself is up to 3 s shorter; the metric is the conservative upper bound. Healthy takeovers land between 10 and 10.7 s. Buckets are 10, 10.5, 10.7, 11, 11.2, 12, 15 and 30 s, so a p99 over 11.2 means some takeovers fell in the 11.2-12 s bucket or later: orphans waited more than about 1 s after their lease expired. For an early warning, look at `expired_for` in the [stuck RUNNING runs](#stuck-running-runs) query.
 
 **Likely causes**
 - Every live node is busy: no worker free for recovered runs.
