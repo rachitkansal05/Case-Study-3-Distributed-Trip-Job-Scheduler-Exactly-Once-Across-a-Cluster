@@ -12,7 +12,7 @@ import org.yaml.snakeyaml.Yaml;
 
 /**
  * {@code ops/prometheus/alerts.yml} has the structure Prometheus expects (promtool is not
- * available in the build), implements every "Alert when" of PLAN.md section 14, uses only known
+ * available in the build), implements every "Alert when" of docs/design/architecture.md section 14, uses only known
  * metric names, and links every rule to an existing section of {@code docs/RUNBOOK.md}.
  */
 class AlertRulesTest {

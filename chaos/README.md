@@ -4,8 +4,8 @@ Two end-to-end failure drills against the docker compose cluster. Each one sends
 
 | Script | Failure | Main assertion |
 |---|---|---|
-| `kill-during-alerts.sh` | `docker kill -s KILL` of the owning node (PLAN §12, row 1) | Another node takes the run over with a higher token; 1,200 distinct deliveries; `maxDeliveriesPerKey == 1`; prints the takeover time |
-| `freeze-during-alerts.sh` | `docker pause` of the owning node for 30 s, then `docker unpause` (PLAN §11) | The frozen node's fencing counters rise; sink `staleRejected > 0` (warning if 0); 1,200 distinct deliveries; `maxDeliveriesPerKey == 1` |
+| `kill-during-alerts.sh` | `docker kill -s KILL` of the owning node (architecture.md §12, row 1) | Another node takes the run over with a higher token; 1,200 distinct deliveries; `maxDeliveriesPerKey == 1`; prints the takeover time |
+| `freeze-during-alerts.sh` | `docker pause` of the owning node for 30 s, then `docker unpause` (architecture.md §11) | The frozen node's fencing counters rise; sink `staleRejected > 0` (warning if 0); 1,200 distinct deliveries; `maxDeliveriesPerKey == 1` |
 
 > **Not run here.** The machine these scripts were written on has no Docker. They have been checked with `bash -n` only (shellcheck is not installed there either, but the code follows its rules). Expect to fix small things on the first real run.
 
@@ -67,14 +67,14 @@ Shared setup (`lib.sh`, `setup_alert_run`). Each step was checked against the co
 - Reads the DB clock (`clock_timestamp()`), then runs `docker kill -s KILL $(docker compose ps -q <owner>)`.
 - Polls `job_run` every 0.5 s until the run has a different `(fencing_epoch, fencing_seq)`. It checks the token rather than the owner, because a restart policy could bring a node back under the same name. The claim instant is `lease_until − 10 s` on first sight. Renewals run every 3 s, so a 0.5 s poll catches the claim before the first renewal.
 - Waits for `SUCCEEDED`, then asserts `deliveredDistinct == 1200` for the run and `maxDeliveriesPerKey == 1` in the sink totals.
-- Prints the takeover time (kill → new claim, DB clock) and the time from the old `lease_until` to the new claim. Above 11.2 s (PLAN §11) it prints a warning but does not fail.
+- Prints the takeover time (kill → new claim, DB clock) and the time from the old `lease_until` to the new claim. Above 11.2 s (architecture.md §11) it prints a warning but does not fail.
 - Restarts the killed service with `docker compose start` unless `--no-restart` is given.
 
 ### `freeze-during-alerts.sh`
 
 - Before the pause it scrapes the owner's `/actuator/prometheus` and sums every series of `scheduler_stale_commit_rejected_total`, plus `scheduler_lease_lost_total` for each reason: `stale_409`, `fenced_write_0_rows`, `self_fence` (the tags come from `LeaseLostReason.metricTag()`).
 - Runs `docker pause` for `FREEZE_SECONDS`, then `docker unpause`, then waits for `SUCCEEDED`.
-- **Fencing assertion:** stale commits **or** any lease-lost reason must rise on the frozen node within `FENCE_WAIT` s. The brief asks for the stale-commit counter, but per PLAN §11 a frozen node normally never reaches its commit. On wake-up it self-fences (`self_fence`), or an in-flight send gets a 409 (`stale_409`), or its next renew or checkpoint matches 0 rows (`fenced_write_0_rows`). Any of these stops the handler first. All four counters are printed.
+- **Fencing assertion:** stale commits **or** any lease-lost reason must rise on the frozen node within `FENCE_WAIT` s. The brief asks for the stale-commit counter, but per architecture.md §11 a frozen node normally never reaches its commit. On wake-up it self-fences (`self_fence`), or an in-flight send gets a 409 (`stale_409`), or its next renew or checkpoint matches 0 rows (`fenced_write_0_rows`). Any of these stops the handler first. All four counters are printed.
 - **Sink `staleRejected > 0`** is a *warning* when it is 0, not a failure. A 409 needs a request with the old token to reach the sink after the new owner's first send. When the pause lands between two sends (the common case), the node self-fences on wake-up and sends nothing more.
 - Asserts `deliveredDistinct == 1200` and `maxDeliveriesPerKey == 1`.
 

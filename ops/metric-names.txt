@@ -8,7 +8,7 @@
 # [prometheus] names are produced by Prometheus itself, not by our code.
 
 [scheduler]
-# EngineMetrics (PLAN.md section 14)
+# EngineMetrics (docs/design/architecture.md section 14)
 scheduler_fire_lag_seconds_bucket
 scheduler_fire_lag_seconds_count
 scheduler_fire_lag_seconds_sum

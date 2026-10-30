@@ -6,7 +6,7 @@ import java.util.UUID;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
-/** {@link PartitionPlacement} using Core's murmur3 {@link PartitionHasher} (PLAN.md section 06). */
+/** {@link PartitionPlacement} using Core's murmur3 {@link PartitionHasher} (docs/design/architecture.md section 06). */
 @Component
 public class CorePartitionPlacement implements PartitionPlacement {
 

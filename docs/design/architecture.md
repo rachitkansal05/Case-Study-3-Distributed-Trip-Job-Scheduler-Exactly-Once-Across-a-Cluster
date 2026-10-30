@@ -1,6 +1,8 @@
-# Distributed Trip Job Scheduler
+# Architecture: the complete design
 
-> MoveInSync · Case Study 3 · Implementation plan
+> MoveInSync · Case Study 3 · Distributed Trip Job Scheduler
+
+This is the detailed design of the whole system: guarantees, data model, every protocol, failure modes, API, observability, code layout, test matrix, capacity and trade-offs. Code comments refer to it as "plan section NN" (for example "plan section 07" is [§07](#07-claim-fence-execute-commit)). Each feature also has a shorter design document of its own; the index is [`docs/design/README.md`](README.md).
 
 A Java 21 / Spring Boot scheduler that runs rosters, pickup alerts, no-show cancels and billing close across three or more nodes. Each side effect happens once even when a node is killed or frozen. Postgres is the only coordinator, and no single row is a hot lock.
 
@@ -28,8 +30,6 @@ A Java 21 / Spring Boot scheduler that runs rosters, pickup alerts, no-show canc
 16. [Test matrix](#16-test-matrix-every-hard-rule-is-automated)
 17. [Benchmark](#17-benchmark-plan-and-capacity-math)
 18. [Trade-offs](#18-trade-offs-and-deliberate-omissions)
-19. [Roadmap](#19-delivery-roadmap)
-20. [Demo script](#20-demo-video-script-about-6-minutes)
 21. [Review fixes](#21-design-review-issues-found-and-fixed)
 
 ---
@@ -54,7 +54,7 @@ Every rule gets an ID. Each ID appears again in the [test matrix](#16-test-matri
 | R12 | SIGSTOP for 30 s: lease expires, another node finishes, the stale write is rejected | Fencing + `docker pause` chaos test (§11) |
 | R13 | 100k jobs in 10 min on 3 nodes with p99 fire lag < 2 s | Load generator + HdrHistogram report (§17) |
 | R14 | RBAC (employee / admin / operator) with tenant isolation; no PII in logs or errors | JWT + repository tenant scoping + log masking |
-| R15 | One-command run, README with benchmark and machine, design note, demo video, meaningful commits | `docker compose up`, `docs/`, roadmap (§19) |
+| R15 | One-command run, README with benchmark and machine, design note, demo video, meaningful commits | `docker compose up`, [README](../../README.md), [demo script](../DEMO.md), `docs/design/` |
 
 ---
 
@@ -90,11 +90,15 @@ A node can do the work (send the SMS) and then die before it records that the wo
 | Security | Spring Security resource server, HS256 JWT | Roles and tenant claim in the token; dev token endpoint for the demo |
 | Metrics / logs | Micrometer → Prometheus → Grafana; logstash JSON encoder | Histogram with SLO buckets; MDC fields for run, job, tenant, node, token |
 | Tests | JUnit 5, AssertJ, Awaitility, embedded PostgreSQL 16 (zonky) | Real Postgres in every integration test, without Docker. Testcontainers is used only by the two Docker-gated failover tests (`FailoverFencingIT`, `StrictSyncIT`), which skip when Docker is missing. Toxiproxy runs in docker compose for manual fault injection; no automated test uses it |
-| Load / chaos | In-process benchmark (`InProcessBench`: 3 nodes + the real sink) and a compose-mode load generator (`LoadGenMain`), both reporting with HdrHistogram; shell chaos scripts (`docker kill -s KILL`, `docker pause`) | Reproducible R11–R13 runs whose numbers go into `docs/BENCHMARK.md` |
+| Load / chaos | In-process benchmark (`InProcessBench`: 3 nodes + the real sink) and a compose-mode load generator (`LoadGenMain`), both reporting with HdrHistogram; shell chaos scripts (`docker kill -s KILL`, `docker pause`) | Reproducible R11–R13 runs whose numbers go into [`performance-and-benchmark.md`](performance-and-benchmark.md) |
 
 ---
 
 ## 04. Architecture
+
+![Architecture overview](../images/architecture-overview.png)
+
+![Components of one scheduler node](../images/architecture-node.png)
 
 Every node runs the same jar, so there is no leader. Each node runs five loops. The **membership** loop heartbeats. The **partition** loop acquires and renews partition leases. The **poller** claims due runs from owned partitions. The **dispatcher** runs them under per-tenant caps. The **orphan sweep** takes over runs whose lease expired, in any partition. A separate notification sink stands in for the real SMS/push provider and enforces idempotency keys and fencing tokens, which is what the tests check.
 
@@ -448,7 +452,7 @@ Two mechanisms work together. **Slots enforce the cap**: each tenant has exactly
 
 > **Trade-off made visible:** a hard cap leaves capacity idle while tenant A waits. Alerts go out 30 minutes before pickup, so a 62–72 s drain is fine. The cap is configurable per tenant (A could get 96, which drains in about 21 s). A cap is not work-conserving; we pick isolation over peak throughput because the brief asks for it. The cluster-capacity row is the plan's estimate; the measured ceiling of the whole laptop setup is lower (§17).
 >
-> **Measured** (`docs/BENCHMARK.md` §3.2): A drained at 698 runs/s (71.6 s), not 800/s (62.5 s). Each run holds its slot for about 46 ms, not 40 ms: the 20–60 ms sink call plus the checkpoint, the fenced commit and the claim round trip that refills the slot, and 32 / 0.046 s ≈ 700 runs/s. B's worst lag was 185 ms. `DrainRateIT` (3 nodes, cap 32, 40 ms handler, 5,000 runs) measured 614–645 runs/s and asserts ≥ 600. Before slot-freed claims (§07) the same tenant drained at about 144 runs/s.
+> **Measured** ([performance-and-benchmark.md §3.2](performance-and-benchmark.md#32-scenario-2-burst--fairness-b-unaffected-max-185-ms-a-drained-in-716-s)): A drained at 698 runs/s (71.6 s), not 800/s (62.5 s). Each run holds its slot for about 46 ms, not 40 ms: the 20–60 ms sink call plus the checkpoint, the fenced commit and the claim round trip that refills the slot, and 32 / 0.046 s ≈ 700 runs/s. B's worst lag was 185 ms. `DrainRateIT` (3 nodes, cap 32, 40 ms handler, 5,000 runs) measured 614–645 runs/s and asserts ≥ 600. Before slot-freed claims (§07) the same tenant drained at about 144 runs/s.
 
 ### Why the cap holds at every moment
 
@@ -652,7 +656,7 @@ trip-job-scheduler/
 ├─ chaos/                        kill-during-alerts.sh, freeze-during-alerts.sh
 ├─ deploy/patroni/               production failover config (F1–F5)
 ├─ ops/                          prometheus (scrape config, 13 alert rules), grafana dashboard, toxiproxy
-└─ docs/                         DESIGN.md, BENCHMARK.md, RUNBOOK.md, CONTRACTS.md, sink-api.md, DEMO.md, postman/
+└─ docs/                         design/ (this file + one design doc per feature), RUNBOOK.md, sink-api.md, DEMO.md, postman/, images/
 ```
 
 - **Encapsulation:** run state changes only through `ClaimProtocol`, whose fenced methods return `false` when the lease is lost, and `RunStateMachine` holds the legal transitions. There is no mutable `JobRun` entity; a claimed run is an immutable record (`ClaimedRun`, `RunContext`).
@@ -682,7 +686,7 @@ trip-job-scheduler/
 | R10 | `MetricsIT` (every metric and label exported; state gauges equal DB counts), `EngineMetricsTest`, `AlertRulesTest`, `GrafanaDashboardTest`, `RunbookTest`, `ComposeConfigTest`, `OpsMetricNamesIT` (sink) | Integration + Unit |
 | R11 | `NodeCrashIT` (in-JVM kill: worker threads stopped and the connection pool closed, right after a lease renewal; no Toxiproxy), `EndToEndKillIT` (loadgen: real sink over HTTP in its own JVM); assert 1,200 deliveries, 0 duplicates, takeover ≤ 11.2 s, and (`NodeCrashIT`) a recorded `scheduler_orphan_takeover_time_seconds` between 10 s and 11.2 s that matches the measured interval. `chaos/kill-during-alerts.sh` on compose (passed: takeover 7.98 s, 1,200 delivered once) | **Failure injection** |
 | R12 | `GcPauseIT` (short timings: freeze past the lease → sink 409 and 0-row commit), `EndToEndFreezeIT` (production timings, 30 s freeze, real sink: the in-flight send gets 409, the fenced commit returns false, 1,200 delivered once). `chaos/freeze-during-alerts.sh` (`docker pause` 30 s on compose; passed, 1,200 delivered once) | **Failure injection** |
-| R13 | `InProcessBench` (loadgen test scope, `-Pbench`): 3 nodes in one JVM + the real sink + embedded Postgres with fsync on. It ran **in-process, not on compose**; the compose mode (`LoadGenMain`) exists but has not been run against a live stack. Numbers in `docs/BENCHMARK.md` | Benchmark |
+| R13 | `InProcessBench` (loadgen test scope, `-Pbench`): 3 nodes in one JVM + the real sink + embedded Postgres with fsync on. It ran **in-process, not on compose**; the compose mode (`LoadGenMain`) exists but has not been run against a live stack. Numbers in [`performance-and-benchmark.md`](performance-and-benchmark.md) | Benchmark |
 | R14 | `TenantIsolationIT` (A's token on B's job → 404), `RoleMatrixIT`, `DevTokenIT`, `DevTokenDisabledIT`, `PiiMaskingTest`, `LoggingIT`, `ErrorResponseTest` (no payload or stack trace in body); sink `PayloadPrivacyIT`, `SinkLogMaskingTest` | API + Unit |
 
 On the build machine: 868 tests, 2 skipped (the Docker-gated ones); on 2026-10-30 three timing checks also failed on the unchanged `main` because the disk was nearly full (README, Build and test).
@@ -700,7 +704,7 @@ On the build machine: 868 tests, 2 skipped (the Docker-gated ones); on 2026-10-3
 
 ### Expected numbers, and what was measured
 
-Measured on one 6-core laptop with all three nodes, the sink and Postgres on it (`docs/BENCHMARK.md`).
+Measured on one 6-core laptop with all three nodes, the sink and Postgres on it ([`performance-and-benchmark.md`](performance-and-benchmark.md)).
 
 | Quantity | Estimate | Reasoning | Measured |
 |---|---|---|---|
@@ -725,7 +729,7 @@ Measured on one 6-core laptop with all three nodes, the sink and Postgres on it 
 
 The bottleneck was **not isolated**. CPU reached 91–100 % in the failing steps, shared by all three processes. The leading hypothesis is the poller: each node claims tenant by tenant, one claim transaction after another, on a single thread; with 50 tenants that is up to 50 transactions per node per 200 ms tick, and once a tick takes longer than 200 ms, lag grows without bound. Confirming it needs a profile or Postgres on separate hardware. If it is the poller, the next step is claiming several tenants per transaction or claiming in parallel; if it is Postgres, shard by partition range (partitions already give the routing key), then move run dispatch to a partitioned log (Kafka) and keep Postgres for definitions and state. The second limit is 128 partitions, which caps useful nodes at about 40.
 
-`docs/BENCHMARK.md` reports CPU model, cores, RAM, disk, OS, JVM flags and Postgres config next to the results. The benchmark ran in-process (no Docker on the machine), so there are no Docker resource numbers.
+[`performance-and-benchmark.md`](performance-and-benchmark.md) reports CPU model, cores, RAM, disk, OS, JVM flags and Postgres config next to the results. The benchmark ran in-process (no Docker on the machine), so there are no Docker resource numbers.
 
 ---
 
@@ -776,68 +780,6 @@ Lowering a cap doesn't stop running jobs; new starts wait until the running coun
 - An admin UI (Grafana and the REST API cover operations); real SMS/push providers.
 - Full OAuth2 identity provider (a dev token minting endpoint stands in).
 - Our own failover manager: Patroni is relied on for promotion (F1–F5), and testing its quorum logic is out of scope.
-
----
-
-## 19. Delivery roadmap
-
-Each milestone lands as several small commits with clear messages, so the history tells the story the brief asks for.
-
-#### Day 1 · Skeleton and one-command run
-
-Maven multi-module, `docker-compose.yml` (Postgres, 3 nodes, sink, Prometheus, Grafana), Flyway V1 schema, health endpoints, CI (GitHub Actions: build + tests).
-
-#### Day 2 · Core time logic
-
-`CronSchedule`, `WallClockResolver`, `NextFireCalculator` with the DST test suite (R2). Misfire and backoff policies with unit tests (R6, R8).
-
-#### Day 3 · Membership and partitions
-
-Heartbeats, rendezvous assignment, partition lease loop (6 s lease, expired owner treated as dead), orphan sweep, `RebalanceIT` (R5).
-
-#### Day 4 · Claim, fence, commit
-
-`ClaimProtocol`: slot-then-run locking, conditional reap, renew and commit that fail once the lease expired, `clock_timestamp()` everywhere, the `(epoch, seq)` token. Slot constraints in the schema. `FencingIT`, `ClaimRaceIT`, `SlotStealRaceIT`, `LeaseResurrectionIT`, `SlotConstraintTest` (R4, R7).
-
-#### Day 5 · Handlers and the sink
-
-`JobHandler` hierarchy, chunked pickup-alert handler with checkpoints, notification sink with idempotency and token checks. `ExactlyOnceEffectIT` (R3).
-
-#### Day 6 · Fairness, retries, DLQ
-
-DRR dispatcher, deferred cap reduction with compaction, retry/backoff wiring with lease-lost classification, dead-letter table and replay. `TenantFairnessIT`, `TenantCapIT`, `CapReductionIT`, `LockOrderIT`, `RetryToDeadLetterIT` (R7, R8).
-
-#### Day 7 · API, security, errors
-
-Controllers, JWT roles, `TenantScope`, `Idempotency-Key` on writes, ProblemDetail advice, PII masking. Isolation, role and `ApiIdempotencyIT` tests (R9, R14).
-
-#### Day 8 · Observability and caching
-
-Micrometer metrics, JSON logs with MDC, Grafana dashboard JSON, Caffeine caches (R10).
-
-#### Day 9 · Chaos and benchmark
-
-`chaos/*.sh`, worst-case `NodeCrashIT`, `GcPauseIT`, `FailoverFencingIT`, `StrictSyncIT`, `ClusterGenerationGuardIT`, `deploy/patroni/` config, load generator, run the three scenarios and record results (R4, R11–R13).
-
-#### Day 10 · Docs and demo
-
-README (run, assumptions, benchmark table with machine spec, trade-offs), `docs/DESIGN.md` (diagrams, sequence, failure table), Postman collection, demo video (R15).
-
----
-
-## 20. Demo video script (about 6 minutes)
-
-The full script with exact commands (about 9 minutes) is [`docs/DEMO.md`](docs/DEMO.md).
-
-1. `docker compose up`: show 3 nodes, the Grafana dashboard, and `GET /api/v1/cluster` with 39 / 40 / 49 partitions on `scheduler-1/2/3` (rendezvous hashing of those ids; pinned by `PartitionAssignerTest`).
-2. Create two tenants as OPERATOR and mint ADMIN tokens for them. Create recurring roster jobs in `America/New_York` at 01:30 and 02:30 and show `next-fire-times` across 1 Nov 2026 (one 01:30 run, at 05:30Z) and 14 Mar 2027 (02:30 fires at 03:00 local, 07:00Z).
-3. Show tenant isolation: tenant B's token on tenant A's job returns 404.
-4. Start a 1,200-alert pickup job, run `chaos/kill-during-alerts.sh` live, and watch node 2 take over in Grafana. Query the sink: 1,200 delivered, 0 duplicates, some attempts deduped.
-5. Repeat with `docker pause` for 30 s. Show the frozen node's fencing counters rise (`scheduler_lease_lost_total{reason}`; on wake-up it usually self-fences before reaching its commit, so `scheduler_stale_commit_rejected_total` may stay flat) and, if a send was in flight, the sink's `staleRejected` 409 count.
-6. Pause and resume a tenant; trigger a job manually twice with the same `Idempotency-Key`, which creates one run; replay a dead-lettered run.
-7. Show the benchmark output: 100k jobs, p50 / p99 lag, and the fairness table for tenants A and B.
-
-> **Assumptions to confirm before building:** the project lives in its own repository. A mock notification sink is an acceptable stand-in for real SMS/push. Java 21 and Docker Desktop with about 6 GB RAM are available for the benchmark. (In the end the benchmark ran in-process on a laptop without Docker; see `docs/BENCHMARK.md`.)
 
 ---
 

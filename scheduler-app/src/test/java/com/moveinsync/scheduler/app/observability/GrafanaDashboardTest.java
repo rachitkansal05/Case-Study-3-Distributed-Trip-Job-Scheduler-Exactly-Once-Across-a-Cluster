@@ -15,7 +15,7 @@ import org.yaml.snakeyaml.Yaml;
 
 /**
  * {@code ops/grafana/dashboards/scheduler.json} is valid, provisioned against the right
- * datasource, has the {@code node} and {@code tenant} variables and the PLAN.md section 14 panels
+ * datasource, has the {@code node} and {@code tenant} variables and the docs/design/architecture.md section 14 panels
  * in order, and every PromQL expression uses only metric names from {@code ops/metric-names.txt}
  * (which {@code MetricsIT} proves are really exported).
  */

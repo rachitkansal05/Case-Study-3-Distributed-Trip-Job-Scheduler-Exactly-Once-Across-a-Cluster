@@ -4,7 +4,7 @@ import org.springframework.http.HttpStatus;
 
 /**
  * 404. Also used for resources of another tenant, so a response never reveals that they exist
- * (PLAN.md section 13).
+ * (docs/design/architecture.md section 13).
  */
 public final class NotFoundException extends SchedulerException {
 

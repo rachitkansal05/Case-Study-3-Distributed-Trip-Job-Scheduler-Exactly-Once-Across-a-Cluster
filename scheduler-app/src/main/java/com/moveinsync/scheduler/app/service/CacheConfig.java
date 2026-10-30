@@ -10,7 +10,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
- * Caffeine caches with the bounds of PLAN.md section 14. Only these two named caches exist (no
+ * Caffeine caches with the bounds of docs/design/architecture.md section 14. Only these two named caches exist (no
  * dynamic creation), so nothing else can be cached by accident. <b>Caps and the pause flag are
  * never cached</b>: the cap is the slot rows and the claim reads {@code tenant.paused} directly.
  *

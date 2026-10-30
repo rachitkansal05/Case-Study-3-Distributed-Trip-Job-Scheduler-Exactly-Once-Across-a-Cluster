@@ -8,7 +8,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.test.context.ActiveProfiles;
 
 /**
- * {@code POST /dev/token} in the {@code dev} profile (PLAN.md section 13): open without a token,
+ * {@code POST /dev/token} in the {@code dev} profile (docs/design/architecture.md section 13): open without a token,
  * mints a JWT that the resource server accepts with the requested tenant and role, and validates
  * its body like any other endpoint (field name in {@code errors}, R14).
  */

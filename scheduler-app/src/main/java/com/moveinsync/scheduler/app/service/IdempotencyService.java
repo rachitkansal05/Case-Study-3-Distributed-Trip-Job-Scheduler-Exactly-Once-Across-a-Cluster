@@ -26,7 +26,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * Retry-safe writes (PLAN.md section 13). With an {@code Idempotency-Key}, the action and the
+ * Retry-safe writes (docs/design/architecture.md section 13). With an {@code Idempotency-Key}, the action and the
  * stored response commit in <b>one transaction</b>, under an advisory lock on (namespace, key):
  * <ul>
  *   <li>same key, same request → the stored status, {@code Location} and body are replayed

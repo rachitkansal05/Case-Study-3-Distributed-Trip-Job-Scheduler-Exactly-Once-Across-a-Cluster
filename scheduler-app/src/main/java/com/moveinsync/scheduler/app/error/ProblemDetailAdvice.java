@@ -34,7 +34,7 @@ import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 /**
  * Maps every exception to an RFC 7807 {@link ProblemDetail} with a stable {@code code}, a safe
- * message and the request's {@code traceId} (PLAN.md section 14).
+ * message and the request's {@code traceId} (docs/design/architecture.md section 14).
  *
  * <p>Responses never contain stack traces, SQL, exception messages of libraries or rejected
  * values: validation errors name the field and a fixed reason only. Unexpected errors are logged

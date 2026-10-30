@@ -15,7 +15,7 @@ import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
 /**
- * Tenant isolation (PLAN.md section 13, R14): the tenant comes only from the JWT, every read and
+ * Tenant isolation (docs/design/architecture.md section 13, R14): the tenant comes only from the JWT, every read and
  * write of another tenant's resource answers 404 (never 403, and indistinguishable from a resource
  * that does not exist), cross-tenant writes change nothing, and OPERATOR crosses tenants without
  * ever seeing payloads.

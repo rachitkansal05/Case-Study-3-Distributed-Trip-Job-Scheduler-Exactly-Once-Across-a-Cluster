@@ -13,7 +13,7 @@ import org.springframework.validation.annotation.Validated;
 
 /**
  * All timing and sizing knobs of a scheduler node ({@code scheduler.*} in {@code application.yml}).
- * Defaults and their reasoning are in PLAN.md sections 06, 07, 09 and 10. Validated at startup, so
+ * Defaults and their reasoning are in docs/design/architecture.md sections 06, 07, 09 and 10. Validated at startup, so
  * an inconsistent configuration (e.g. renewal slower than the lease) stops the node from starting.
  */
 @Validated

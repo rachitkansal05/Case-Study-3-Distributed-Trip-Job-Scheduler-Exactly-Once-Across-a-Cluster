@@ -7,7 +7,7 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Outside the {@code dev} profile {@code POST /dev/token} does not exist and is not opened in the
- * security chain (PLAN.md section 13): an anonymous call is a plain 401 and mints nothing.
+ * security chain (docs/design/architecture.md section 13): an anonymous call is a plain 401 and mints nothing.
  */
 class DevTokenDisabledIT extends ApiIntegrationTest {
 

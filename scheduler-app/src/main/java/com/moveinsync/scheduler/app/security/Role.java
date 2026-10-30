@@ -2,7 +2,7 @@ package com.moveinsync.scheduler.app.security;
 
 import java.util.Optional;
 
-/** Roles carried in the JWT {@code roles} claim (PLAN.md section 13). */
+/** Roles carried in the JWT {@code roles} claim (docs/design/architecture.md section 13). */
 public enum Role {
     /** Reads schedules of their own tenant; never sees payloads. */
     EMPLOYEE,

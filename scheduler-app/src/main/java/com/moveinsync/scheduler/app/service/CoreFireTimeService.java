@@ -11,7 +11,7 @@ import org.springframework.stereotype.Component;
 
 /**
  * {@link FireTimeService} backed by Core's {@link CronSchedule} and {@link NextFireCalculator}, so
- * the API and the engine's materialiser apply the same DST rules (PLAN.md section 08).
+ * the API and the engine's materialiser apply the same DST rules (docs/design/architecture.md section 08).
  */
 @Component
 public class CoreFireTimeService implements FireTimeService {

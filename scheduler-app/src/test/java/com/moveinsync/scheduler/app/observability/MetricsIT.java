@@ -42,7 +42,7 @@ import org.springframework.test.context.TestPropertySource;
 
 /**
  * A real node (engine enabled, fake sink) runs a small workload, then {@code /actuator/prometheus}
- * must export every metric of the PLAN.md section 14 table with its tags, every {@code [scheduler]}
+ * must export every metric of the docs/design/architecture.md section 14 table with its tags, every {@code [scheduler]}
  * name of {@code ops/metric-names.txt} (the list the dashboard, alerts and runbook are checked
  * against), and the Caffeine caches; the {@code scheduler_runs{state}} gauges must equal
  * {@code SELECT state, count(*) FROM job_run}.

@@ -1,6 +1,6 @@
 # Patroni production example
 
-A PostgreSQL 16 cluster that meets the failover preconditions F1–F5 of PLAN.md §12. The docker compose demo at the repository root runs a single Postgres and makes no claim to survive a database failover. This directory shows the setup the scheduler expects in production.
+A PostgreSQL 16 cluster that meets the failover preconditions F1–F5 of [architecture.md §12](../../docs/design/architecture.md#failover-requirements-production) (also in [failure-handling.md](../../docs/design/failure-handling.md#6-database-failover-production)). The docker compose demo at the repository root runs a single Postgres and makes no claim to survive a database failover. This directory shows the setup the scheduler expects in production.
 
 > **Not run here.** The machine this was written on has no Docker. The YAML files were parsed with PyYAML (`yaml.safe_load`): `docker-compose.patroni.yml` and `patroni.yml` both parse. The shell scripts pass `bash -n`. `haproxy.cfg` and the Dockerfile have not been validated (no `haproxy -c`, no build). Treat the first real start as the test.
 
@@ -35,7 +35,7 @@ SPRING_DATASOURCE_URL=jdbc:postgresql://pg-1:5432,pg-2:5432,pg-3:5432/scheduler?
 ```
 
 - **`targetServerType=primary`** is the property the **Java driver (pgjdbc) honours**. pgjdbc tries the hosts in order and keeps only one that is not read-only (it checks `transaction_read_only` / `in_hot_standby`). `hostRecheckSeconds` controls how long it caches a host's role.
-- **`target_session_attrs=read-write`** is the **libpq** name for the same rule (psql, psycopg, pgbench, `pg_isready`). pgjdbc does not use it: it ignores unknown URL parameters. It stays in the URL because the requirement (PLAN §12 F4, "clients connect with `target_session_attrs=read-write`") is written in libpq terms, and because ops tools that reuse the connection string honour it. Do not remove `targetServerType=primary`. That is the parameter that protects the scheduler.
+- **`target_session_attrs=read-write`** is the **libpq** name for the same rule (psql, psycopg, pgbench, `pg_isready`). pgjdbc does not use it: it ignores unknown URL parameters. It stays in the URL because the requirement (architecture.md §12 F4, "clients connect with `target_session_attrs=read-write`") is written in libpq terms, and because ops tools that reuse the connection string honour it. Do not remove `targetServerType=primary`. That is the parameter that protects the scheduler.
 - The libpq form, for psql: `postgresql://scheduler@pg-1:5432,pg-2:5432,pg-3:5432/scheduler?target_session_attrs=read-write`.
 - pgjdbc checks the role only when a connection opens. A connection that is already open to a demoted primary is cut when Patroni restarts that Postgres as a replica. Hikari then replaces it, and the new connection lands on the new primary.
 
@@ -61,11 +61,11 @@ Line numbers are for the files in this directory as committed.
 | F4 | The old primary can't accept writes after a promotion | Leader lock `ttl: 30`, `loop_wait: 10`, `retry_timeout: 10` (a primary that cannot renew the lock demotes itself). `failsafe_mode: false` (losing etcd means demote). `watchdog.mode: required` (a hung Patroni gets its host reset before the lock expires) plus the `/dev/watchdog` device. HAProxy `/primary` check with `shutdown-sessions`. Clients use `targetServerType=primary` / `target_session_attrs=read-write` | `patroni.yml:31-33`, `:63`, `:123-124`; `docker-compose.patroni.yml:45`; `haproxy.cfg:39-41`; scheduler JDBC URL above |
 | F5 | Fencing epochs strictly increase | Every promotion starts a new timeline. `use_pg_rewind: true` + `wal_log_hints: "on"` let the old primary rejoin on the new timeline instead of forking. `cluster_generation` covers rebuilds, and the startup check rejects an epoch below the sink's highest (`EpochGuard`, `FencingEpochReader` in `scheduler-app`) | `patroni.yml:66`, `:75`; below |
 
-`synchronous_standby_names` is **managed by Patroni** and must not be set by hand. With `synchronous_node_count: 1`, Patroni writes a single name (for example `"pg-2"`), which Postgres treats as `FIRST 1 (pg-2)`. With N > 1 it writes `N (a,b,…)`. If you switch to `synchronous_mode: quorum` (`ANY k (…)`), F3 also needs the PLAN §12 rule: promotion must reach n − k + 1 standbys and pick the highest flushed WAL position, or refuse.
+`synchronous_standby_names` is **managed by Patroni** and must not be set by hand. With `synchronous_node_count: 1`, Patroni writes a single name (for example `"pg-2"`), which Postgres treats as `FIRST 1 (pg-2)`. With N > 1 it writes `N (a,b,…)`. If you switch to `synchronous_mode: quorum` (`ANY k (…)`), F3 also needs the architecture.md §12 rule: promotion must reach n − k + 1 standbys and pick the highest flushed WAL position, or refuse.
 
 ## Fencing epoch and `cluster_generation`
 
-The scheduler's token epoch is `cluster_generation × 2^32 + timeline` (PLAN §07). The timeline is the first 8 hex digits of `pg_walfile_name(pg_current_wal_lsn())`.
+The scheduler's token epoch is `cluster_generation × 2^32 + timeline` (architecture.md §07). The timeline is the first 8 hex digits of `pg_walfile_name(pg_current_wal_lsn())`.
 
 - **Failover or switchover:** Patroni promotes a replica, Postgres starts timeline T+1, so every new claim's epoch is one higher than any token issued by the old primary. The sink rejects the old tokens with 409. Nothing has to be done by hand.
 - **Rebuild from a fresh `initdb`** (cluster wiped, restored from a logical dump, new etcd scope): the timeline restarts at 1, so the epoch would go *down*. The schedulers then refuse to start: the startup check sees an epoch below the sink's `GET /api/v1/fence/highest-epoch`. Raise the generation on the new primary before starting them:

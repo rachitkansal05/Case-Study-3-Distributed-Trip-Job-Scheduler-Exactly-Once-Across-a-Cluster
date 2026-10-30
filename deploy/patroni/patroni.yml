@@ -1,4 +1,4 @@
-# Patroni configuration shared by pg-1, pg-2 and pg-3 (PLAN.md section 12, F1-F5).
+# Patroni configuration shared by pg-1, pg-2 and pg-3 (docs/design/architecture.md section 12, F1-F5).
 #
 # One template for all three nodes: the per-node values (member name and the addresses other
 # members and HAProxy use to reach it) come from Patroni's own environment overrides, set in

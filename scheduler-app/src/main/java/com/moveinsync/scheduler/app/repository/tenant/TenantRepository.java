@@ -11,7 +11,7 @@ import org.springframework.stereotype.Repository;
  * restricts its SQL to it, so another tenant's row behaves as if it did not exist.
  *
  * <p>The pause flag and the cap are read from here on every request and never cached: the claim
- * reads {@code tenant.paused} directly and the cap <em>is</em> the slot rows (PLAN.md section 14).
+ * reads {@code tenant.paused} directly and the cap <em>is</em> the slot rows (docs/design/architecture.md section 14).
  */
 @Repository
 public class TenantRepository {
@@ -104,7 +104,7 @@ public class TenantRepository {
      * snapshot taken after those locks, so it sees every run that committed into a slot, and
      * deletes only rows no run references. With the rows locked no claim can take them in
      * between, so {@code ON DELETE RESTRICT} never fires; slots in use are left for the Engine's
-     * compactor (PLAN.md section 10).
+     * compactor (docs/design/architecture.md section 10).
      */
     public int deleteFreeSlotsFrom(TenantScope scope, String tenantId, int cap) {
         List<Integer> locked = scope.bind(jdbc.sql(

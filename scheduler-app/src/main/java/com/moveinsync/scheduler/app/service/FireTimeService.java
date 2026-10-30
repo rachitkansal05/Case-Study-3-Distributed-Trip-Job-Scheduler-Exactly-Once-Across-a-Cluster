@@ -8,7 +8,7 @@ import java.util.List;
 
 /**
  * Cron validation and next fire times, evaluated in the tenant's wall-clock zone with the DST
- * rules of PLAN.md section 08.
+ * rules of docs/design/architecture.md section 08.
  *
  * <p>The API layer has <b>no production implementation</b>: an adapter over Core's
  * {@code CronSchedule} / {@code NextFireCalculator} is wired in at merge time. Until then

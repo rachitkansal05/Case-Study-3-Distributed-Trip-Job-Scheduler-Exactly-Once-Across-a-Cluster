@@ -22,7 +22,7 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
 /**
- * Job definition rules of {@code POST /api/v1/jobs} (PLAN.md section 13, R1/R14): every invalid
+ * Job definition rules of {@code POST /api/v1/jobs} (docs/design/architecture.md section 13, R1/R14): every invalid
  * body is a 400 naming the offending field without echoing its value and creates nothing; valid
  * one-off and recurring jobs are stored with the documented defaults, version 1, the partition
  * {@code PartitionHasher.partitionOf(id)} (murmur3) and the first fire time as {@code next_fire_at}.

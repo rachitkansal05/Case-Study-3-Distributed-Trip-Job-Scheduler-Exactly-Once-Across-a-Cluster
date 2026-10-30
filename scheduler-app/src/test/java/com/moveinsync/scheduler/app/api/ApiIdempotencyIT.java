@@ -20,7 +20,7 @@ import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
 
 /**
- * Retry-safe writes (PLAN.md section 13, R9): with an {@code Idempotency-Key}, a retried
+ * Retry-safe writes (docs/design/architecture.md section 13, R9): with an {@code Idempotency-Key}, a retried
  * {@code POST /jobs}, trigger, pause or cap change performs its action once and replays the stored
  * status, {@code Location} and body ({@code Idempotent-Replayed: true}); the same key with another
  * request is a 409 {@code IDEMPOTENCY_KEY_REUSED}; keys are namespaced per tenant; failed requests
