@@ -195,15 +195,7 @@ docker compose up --build
 
 Every service has a health check. `docker compose ps` shows when all are `healthy`.
 
-> ⚠️ **This compose file is for a laptop only.**
-> - It runs every node with the `dev` profile, which opens `POST /dev/token` on ports 8081–8083.
-> - That endpoint mints an OPERATOR or ADMIN token for any tenant without authentication.
->
-> Never expose the stack on a shared network. Outside a laptop:
-> - drop `dev` from `SPRING_PROFILES_ACTIVE`;
-> - set `SCHEDULER_JWT_HMAC_SECRET` and `SINK_ADMIN_TOKEN` to real secrets.
->
-> A node without the `dev` (or `test`) profile refuses to start while the JWT secret is still the public default.
+
 
 ### First calls
 
