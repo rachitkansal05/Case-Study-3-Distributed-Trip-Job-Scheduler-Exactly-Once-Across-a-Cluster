@@ -14,6 +14,7 @@ import com.moveinsync.scheduler.core.policy.FailureClassifier;
 import com.moveinsync.scheduler.core.policy.RetryDecider;
 import java.time.Duration;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -95,29 +96,47 @@ class FencingIT {
     }
 
     @Test
-    void claimReapsExpiredHolderToReuseItsSlot() {
+    void claimReapsExpiredHolderAndRestartsItInTheSameSlot() {
         fx.tenant("fence-b", 1);
         UUID job = fx.job("fence-b").insert();
         long runId = fx.dueRuns(job, 1).get(0);
         ClaimedRun first = claimOne("fence-b", "node-a");
-        long waiting = fx.dueRuns(job, 1).get(0);
+        long waiting = fx.dueRuns(job, 1).get(0); // due earlier than "now", the backlog
         assertThat(protocol.claimDue("node-b", TenantId.of("fence-b"), Fixtures.ALL_PARTITIONS, 1)).isEmpty();
         fx.expireLease(runId);
-        // the claim reaps the expired holder of the only slot and starts the longest-waiting due run
+        // the claim reaps the expired holder of the only slot and restarts it there at once, like the
+        // orphan sweep: it is not queued behind the backlog (takeover stays within lease + claim)
         ClaimedRun second = claimOne("fence-b", "node-b");
-        assertThat(second.runId()).isEqualTo(waiting);
+        assertThat(second.runId()).isEqualTo(runId);
+        assertThat(second.recovered()).isTrue();
         assertThat(second.slotNo()).isEqualTo(first.slotNo());
-        assertThat(fx.state(runId)).isEqualTo("RETRY_WAIT");
+        assertThat(second.token().isNewerThan(first.token())).isTrue();
+        assertThat(second.attempt()).isEqualTo(1); // lease loss does not use up an attempt
         assertThat(fx.intColumn(runId, "lease_lost_count")).isEqualTo(1);
-        assertThat(fx.intColumn(runId, "attempt")).isZero();
+        assertThat(fx.state(waiting)).isEqualTo("SCHEDULED");
         assertThat(protocol.commitSuccess(runId, first.token())).isFalse();
-        assertThat(protocol.commitSuccess(waiting, second.token())).isTrue();
-        // the reaped run is due again and gets a newer token than its first claim
+        assertThat(protocol.commitSuccess(runId, second.token())).isTrue();
+        // the backlog continues in the freed slot
         ClaimedRun third = claimOne("fence-b", "node-c");
-        assertThat(third.runId()).isEqualTo(runId);
-        assertThat(third.attempt()).isEqualTo(1);
-        assertThat(third.token().isNewerThan(first.token())).isTrue();
-        assertThat(protocol.commitSuccess(runId, third.token())).isTrue();
+        assertThat(third.runId()).isEqualTo(waiting);
+        assertThat(protocol.commitSuccess(waiting, third.token())).isTrue();
+    }
+
+    @Test
+    void claimRestartsAReapedRunEvenInAPartitionItDoesNotPoll() {
+        fx.tenant("fence-d", 1);
+        UUID job = fx.job("fence-d").insert();
+        long runId = fx.dueRuns(job, 1).get(0);
+        ClaimedRun first = claimOne("fence-d", "node-a");
+        int foreign = first.partitionId();
+        UUID other = fx.job("fence-d").partition((foreign + 1) % 128).insert();
+        long waiting = fx.dueRuns(other, 1).get(0);
+        fx.expireLease(runId);
+        // node-b polls only the other job's partition; the run it reaps must not be stranded there
+        List<ClaimedRun> runs = protocol.claimDue("node-b", TenantId.of("fence-d"), Set.of((foreign + 1) % 128), 1);
+        assertThat(runs).extracting(ClaimedRun::runId).containsExactly(runId);
+        assertThat(runs.get(0).recovered()).isTrue();
+        assertThat(fx.state(waiting)).isEqualTo("SCHEDULED");
     }
 
     @Test

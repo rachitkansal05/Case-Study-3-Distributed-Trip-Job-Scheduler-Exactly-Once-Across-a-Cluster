@@ -1,0 +1,21 @@
+-- =====================================================================================
+-- V204: misfire means "late before it could be claimed", not "late" (plan section 09).
+--
+-- The claim used to treat any SCHEDULED run more than misfire_threshold past scheduled_at as a
+-- misfire. A run queued behind its own tenant's cap is late too, so a burst larger than about
+-- cap x threshold / run time had its tail SKIPPED (or COALESCED) while the cluster was healthy.
+-- A run has now misfired only if it was already more than the threshold late at the moment the
+-- tenant last became claimable:
+--
+--   claimable_since = greatest(tenant.resumed_at,
+--                              min(alive_since) of the live nodes, or now if none is live)
+--
+-- alive_since: start of this node's current unbroken run of heartbeats. A heartbeat that finds
+--   the previous one older than membership.dead-after (node down, DB unreachable) restarts it.
+--   So after a full-cluster outage or a DB outage every live node's alive_since is the recovery.
+-- resumed_at: set when the tenant is unpaused; runs that fell due while paused are misfires.
+--
+-- NULL alive_since (rows written before this migration) is filled by the next heartbeat.
+-- =====================================================================================
+ALTER TABLE scheduler_node ADD COLUMN alive_since TIMESTAMPTZ;
+ALTER TABLE tenant ADD COLUMN resumed_at TIMESTAMPTZ NOT NULL DEFAULT '-infinity';

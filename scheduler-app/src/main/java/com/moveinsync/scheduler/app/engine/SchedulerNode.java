@@ -73,8 +73,8 @@ public final class SchedulerNode {
         this.clock = new DbSchedulerClock(dataSource);
         this.metrics = new EngineMetrics(meters, id);
         RetryDecider decider = new RetryDecider(backoff(settings), new FailureClassifier(), settings.leaseLostLimit());
-        this.protocol = new JdbcClaimProtocol(dataSource, settings.runLease(), decider, metrics);
-        this.membership = new JdbcMembershipStore(dataSource);
+        this.protocol = new JdbcClaimProtocol(dataSource, settings.runLease(), decider, metrics, settings.deadAfter());
+        this.membership = new JdbcMembershipStore(dataSource, settings.deadAfter());
         JdbcPartitionLeaseStore leases = new JdbcPartitionLeaseStore(dataSource);
         JdbcRunQueries queries = new JdbcRunQueries(dataSource);
         this.epochGuard = new EpochGuard(dataSource, sink, settings.epochGuardTimeout());

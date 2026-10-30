@@ -34,6 +34,7 @@ class RunPurgeIT {
     private UUID job;
     /** Keeps scheduled_at distinct across inserts (UNIQUE (job_id, scheduled_at)). */
     private long nextOffsetMs;
+    private java.time.OffsetDateTime base; // one DB-clock anchor per test, so offsets never collide
 
     @BeforeEach
     void freshDatabase() {
@@ -156,6 +157,15 @@ class RunPurgeIT {
 
     // ------------------------------------------------------------------ helpers
 
+    /* Each call used to read clock_timestamp() itself: a later call could then land exactly on an
+       earlier call's (job_id, scheduled_at) when the gap between them matched the offsets. */
+    private java.time.OffsetDateTime base() {
+        if (base == null) {
+            base = jdbc.sql("SELECT clock_timestamp()").query(java.time.OffsetDateTime.class).single();
+        }
+        return base;
+    }
+
     /** {@code n} runs in {@code state}, finished (terminal states only) {@code age} ago. */
     private void insert(String prefix, String state, int n, Duration age) {
         jdbc.sql("""
@@ -166,10 +176,10 @@ class RunPurgeIT {
                        CASE WHEN ? IN ('SUCCEEDED', 'SKIPPED', 'CANCELLED', 'DEAD_LETTERED') THEN t.at END
                   FROM job j
                  CROSS JOIN generate_series(1, ?) g
-                 CROSS JOIN LATERAL (SELECT clock_timestamp() - ? * interval '1 millisecond'
+                 CROSS JOIN LATERAL (SELECT ?::timestamptz - ? * interval '1 millisecond'
                                             - (? + g) * interval '1 millisecond' AS at) t
                  WHERE j.id = ?""")
-                .params(prefix, state, state, n, age.toMillis(), nextOffsetMs, job).update();
+                .params(prefix, state, state, n, base(), age.toMillis(), nextOffsetMs, job).update();
         nextOffsetMs += n;
     }
 

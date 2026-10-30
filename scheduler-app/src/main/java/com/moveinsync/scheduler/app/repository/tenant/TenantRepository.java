@@ -49,9 +49,14 @@ public class TenantRepository {
                 .optional();
     }
 
-    /** Sets {@code tenant.paused}; false when the tenant does not exist in the scope. */
+    /**
+     * Sets {@code tenant.paused}; false when the tenant does not exist in the scope. Unpausing
+     * stamps {@code resumed_at} (V204), so runs that fell due while paused count as misfires.
+     */
     public boolean setPaused(TenantScope scope, String tenantId, boolean paused) {
-        return scope.bind(jdbc.sql("UPDATE tenant SET paused = :paused WHERE id = :id AND " + scope.predicate("id")))
+        return scope.bind(jdbc.sql("UPDATE tenant SET paused = :paused, "
+                        + "resumed_at = CASE WHEN paused AND NOT :paused THEN clock_timestamp() ELSE resumed_at END "
+                        + "WHERE id = :id AND " + scope.predicate("id")))
                 .param("paused", paused)
                 .param("id", tenantId)
                 .update() == 1;
