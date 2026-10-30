@@ -67,7 +67,8 @@ class PayloadPrivacyIT extends AbstractEmbeddedPostgresIT {
         for (String table : List.of("sink.delivery", "sink.attempt_log", "sink.run_fence")) {
             List<String> rows = jdbc.sql("SELECT row_to_json(t)::text FROM " + table + " t").query(String.class).list();
             assertThat(rows).as(table).noneMatch(r -> r.contains(PHONE) || r.contains(EMAIL) || r.contains(HOME)
-                    || r.contains("12.9716"));
+                    // the coordinates as JSON numbers: a bare "12.9716" also matches timestamps such as 21:29:12.97162
+                    || r.contains("12.9716,") || r.contains("77.5946"));
         }
 
         // responses never echo it
