@@ -323,7 +323,9 @@ UPDATE job_run SET state = 'RETRY_WAIT', due_at = clock_timestamp(), slot_no = N
  WHERE id = :holder AND state = 'RUNNING' AND lease_until < clock_timestamp();
 --    1 row  => the slot is free;   0 rows => the holder renewed in time, skip this slot
 
--- 3. Start one due run per free slot (the orphan sweep restarts the reaped run itself, in the same slot)
+--    A reaped run is restarted at once in the slot it held (same transaction, recovered = true), as the
+--    orphan sweep does: otherwise it would wait as RETRY_WAIT behind the tenant's older due runs.
+-- 3. Start one due run per remaining free slot
 UPDATE job_run r
    SET state = 'RUNNING', slot_no = :slot, owner_node = :me,
        fencing_epoch = :epoch, fencing_seq = nextval('fence_seq'),
@@ -392,7 +394,7 @@ Every checkpoint, renew and commit requires a matching token *and* a lease that 
 
 #### Orphan sweep
 
-Every 500 ms, in any partition: an expired `RUNNING` run is reaped and restarted in one claim transaction, in the same slot, with a higher token, from its checkpoint. Takeover ≤ 10 s lease + 0.5 s sweep + 0.2 s claim = 10.7 s, counted from the dead owner's last successful renewal (the expired `lease_until` minus the lease), which is what `scheduler_orphan_takeover_time_seconds` records (§14).
+Every 500 ms, in any partition: an expired `RUNNING` run is reaped and restarted in one claim transaction, in the same slot, with a higher token, from its checkpoint. A poller that reaps an expired holder while claiming for the tenant (it polls every 200 ms and so often gets there first) restarts it in the same way, whatever partition the run is in. Takeover ≤ 10 s lease + 0.5 s sweep + 0.2 s claim = 10.7 s, counted from the dead owner's last successful renewal (the expired `lease_until` minus the lease), which is what `scheduler_orphan_takeover_time_seconds` records (§14).
 
 ---
 
@@ -414,7 +416,7 @@ Unit tests pin these exact dates and also run against Europe/London (last Sunday
 
 ## 09. Misfires, retries and the dead-letter list
 
-A run has *misfired* when it is claimed with `now() − scheduled_at > misfire_threshold` (default 60 s), usually after cluster downtime or a long pause of a tenant. The policy is a sealed interface with three implementations, applied when the poller claims:
+A run has *misfired* when `claimable_since − scheduled_at > misfire_threshold` (default 60 s): it was already too late when its tenant last became claimable, after cluster downtime, a DB outage or a tenant pause. `claimable_since = greatest(tenant.resumed_at, min(alive_since) of the live nodes)` (V204; DB now if no node is live). A run queued behind its own tenant's cap is late but not misfired, so it is never skipped or coalesced for that. Occurrences due after `claimable_since` always fire. The policy is a sealed interface with three implementations, applied when the poller claims:
 
 | Policy | Behaviour after 3 h downtime, hourly job (3 missed) | Good for |
 |---|---|---|
@@ -671,7 +673,7 @@ trip-job-scheduler/
 | R4 | `FencingTokenTest` (pair order across epochs, timelines above 65,536), `StaleTokenClassificationTest` (409 doesn't count as an attempt; 20 lease losses → `FENCING_CONFLICT`), `FenceDecisionTest` (sink) | Unit |
 | R4 | `FailoverFencingIT` (primary + synchronous standby, kill primary, promote) and `StrictSyncIT` (standby gone → commits block): Testcontainers, skipped without Docker, so **not run locally**. `EpochGuardIT` (stub sink) and `ClusterGenerationGuardIT` (loadgen, real sink): epoch lower than the sink's → node refuses to start | **Failure injection** |
 | R5 | `PartitionAssignerTest`: determinism, minimal movement on join/leave; balance max/min ≤ 1.3 for the compose node ids; over 10,000 random 3-node sets the mean is 1.31 and the test asserts mean < 1.40 with more than 45 % ≤ 1.3 (rendezvous counts are multinomial, so balance is a statistical bound, not exact). `PartitionPlannerTest`. `RebalanceIT`: real timings, kill one of 3 nodes right after it renews its partition leases → all 128 partitions owned within 7 s | Unit + Integration |
-| R6 | `MisfirePolicyTest`: 3 missed hourly runs → FIRE_NOW 3, SKIP 0, COALESCE 1 with count 3. `MisfireIT`: the same through the real claim. `ReplayMisfireIT`: `SKIP` and `COALESCE` runs replayed an hour late, and a manual trigger delayed an hour, each run exactly once while ordinary misfired siblings are still skipped or coalesced; no fire lag for the replay | Unit + Integration |
+| R6 | `MisfirePolicyTest`: 3 missed hourly runs → FIRE_NOW 3, SKIP 0, COALESCE 1 with count 3. `MisfireIT`: the same through the real claim. `MisfireIT` also: a run queued while the cluster was up is not a misfire, one due before an outage or a pause ended is. `BurstSkipIT`: 400 `SKIP` runs queued up to 5 s behind cap 4 with a 1 s threshold, none skipped. `ReplayMisfireIT`: `SKIP` and `COALESCE` runs replayed an hour late, and a manual trigger delayed an hour, each run exactly once while ordinary misfired siblings are still skipped or coalesced; no fire lag for the replay | Unit + Integration |
 | R7 | `TenantFairnessIT`: tenant A 50,000 + tenant B 20 at the same instant, 3 nodes; B p99 lag < 1 s. `DrainRateIT`: one tenant, cap 32, ≥ 600 runs/s | **Concurrency** |
 | R7 | `TenantCapIT`: cap 5, 3+ nodes, 1,000 runs, random kills, freezes, joins and leaves; every 10 ms, leased running runs per tenant ≤ 5 and sink requests with a valid token in flight ≤ 5. **No tolerance.** `LockOrderIT`: claims, commits, the sweep and compaction under load produce no deadlocks | **Concurrency** |
 | R7 | `SchemaIT` (the planned `SlotConstraintTest`): slot outside the tenant's set, another tenant's slot, running with NULL slot, deleting a slot in use → each rejected by the DB. `CapReductionIT`, `CapIncreaseIT`, `CapApiIT`, `ClaimQueryPlanIT`, `DeficitRoundRobinDispatcherTest`, `CapChangePlannerTest` | Unit + Integration |
@@ -683,7 +685,7 @@ trip-job-scheduler/
 | R13 | `InProcessBench` (loadgen test scope, `-Pbench`): 3 nodes in one JVM + the real sink + embedded Postgres with fsync on. It ran **in-process, not on compose**; the compose mode (`LoadGenMain`) exists but has not been run against a live stack. Numbers in `docs/BENCHMARK.md` | Benchmark |
 | R14 | `TenantIsolationIT` (A's token on B's job → 404), `RoleMatrixIT`, `DevTokenIT`, `DevTokenDisabledIT`, `PiiMaskingTest`, `LoggingIT`, `ErrorResponseTest` (no payload or stack trace in body); sink `PayloadPrivacyIT`, `SinkLogMaskingTest` | API + Unit |
 
-On the build machine: 855 tests, 853 passed, 2 skipped (the Docker-gated ones), 0 failures.
+On the build machine: 868 tests, 2 skipped (the Docker-gated ones); on 2026-10-30 three timing checks also failed on the unchanged `main` because the disk was nearly full (README, Build and test).
 
 ---
 

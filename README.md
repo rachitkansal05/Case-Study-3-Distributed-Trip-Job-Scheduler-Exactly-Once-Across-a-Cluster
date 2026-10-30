@@ -6,7 +6,7 @@ A cluster scheduler for MoveInSync trip jobs: nightly rosters at 22:00 tenant ti
 >
 > Design note: [`docs/DESIGN.md`](docs/DESIGN.md) · full plan: [`PLAN.md`](PLAN.md) (mirrors https://claude.ai/artifact/JuMnTBHToDBjXiXkPYSVz3) · benchmark: [`docs/BENCHMARK.md`](docs/BENCHMARK.md) · demo script: [`docs/DEMO.md`](docs/DEMO.md)
 
-**Status:** implemented. 855 automated tests (853 pass, 2 Docker-gated tests skip without Docker). Every number in this file was measured on the machine in [Benchmark](#benchmark) unless it says *estimate*. What could not be run locally is listed under [Known limitations](#known-limitations-and-what-was-not-verified-locally).
+**Status:** implemented. 868 automated tests (2 Docker-gated tests skip without Docker). Every number in this file was measured on the machine in [Benchmark](#benchmark) unless it says *estimate*. What could not be run locally is listed under [Known limitations](#known-limitations-and-what-was-not-verified-locally).
 
 ---
 
@@ -57,7 +57,7 @@ This builds the two Spring Boot images (`scheduler-app/Dockerfile`, `notificatio
 
 Every service has a health check; the nodes start after Postgres and the sink are healthy. `docker compose ps` shows when all are `healthy`.
 
-> **The `dev` profile is for the demo only.** It opens `POST /dev/token`, which mints a token for any tenant and role without authentication. Never enable it in production, and set `SCHEDULER_JWT_HMAC_SECRET` and `SINK_ADMIN_TOKEN` to real secrets outside a laptop.
+> **Warning: this compose file runs every node with the `dev` profile.** That opens `POST /dev/token` on ports 8081–8083, which mints an OPERATOR or ADMIN token for any tenant without authentication, so anyone who can reach those ports controls every tenant. It is meant for a laptop only: never expose this stack on a shared network or deploy it as is. Outside a laptop, drop `dev` from `SPRING_PROFILES_ACTIVE` and set `SCHEDULER_JWT_HMAC_SECRET` and `SINK_ADMIN_TOKEN` to real secrets. A node without the `dev` (or `test`) profile refuses to start if the JWT secret is still the public default.
 
 ### First calls
 
@@ -174,7 +174,7 @@ All engine writes to run state and slots go through one class, `JdbcClaimProtoco
 
 1. **Claim**, in one transaction, always locking the slot row first and the run row second:
    - Lock a free-looking slot of the tenant below its configured cap (`FOR UPDATE SKIP LOCKED`).
-   - If the slot still has a holder whose lease looks expired, **reap it with a conditional update**: `UPDATE job_run SET state = 'RETRY_WAIT', slot_no = NULL WHERE id = ? AND state = 'RUNNING' AND lease_until < clock_timestamp()`. One row updated means the slot is free. Zero rows means the holder renewed in time, so the slot is skipped. Because the reap and a renewal update the same row, Postgres runs them one at a time and exactly one succeeds.
+   - If the slot still has a holder whose lease looks expired, **reap it with a conditional update**: `UPDATE job_run SET state = 'RETRY_WAIT', slot_no = NULL WHERE id = ? AND state = 'RUNNING' AND lease_until < clock_timestamp()`. One row updated means the slot is free, and the reaped run is restarted in that slot in the same transaction (as the orphan sweep does), so a crashed run never waits behind the tenant's backlog (`NodeCrashBacklogIT`). Zero rows means the holder renewed in time, so the slot is skipped. Because the reap and a renewal update the same row, Postgres runs them one at a time and exactly one succeeds.
    - Start the most urgent due run (`ORDER BY priority, due_at`): `state = RUNNING`, `slot_no`, token `(epoch, nextval('fence_seq'))`, `lease_until = clock_timestamp() + 10 s`.
    - The token is used only after this transaction commits.
 2. **Execute.** The handler gets the run's idempotency key, fencing token and last checkpoint. Every outbound call sends `Idempotency-Key` and `Fencing-Token: <epoch>.<seq>`. The renewer extends the lease every 3 s with `WHERE id = ? AND (fencing_epoch, fencing_seq) = (?, ?) AND state = 'RUNNING' AND lease_until >= clock_timestamp()`, so **an expired lease can never be renewed**.
@@ -227,7 +227,7 @@ Cron expressions match **local wall time in the tenant's zone** (five fields, Vi
 
 ## Misfires, retries and the dead-letter list
 
-A run has **misfired** when it is claimed more than `misfireThreshold` (default 60 s, at most 7 days) after its scheduled time, for example after cluster downtime or a tenant pause. Each job picks a policy (default `FIRE_NOW`):
+A run has **misfired** when it was already more than `misfireThreshold` (default 60 s, at most 7 days) past its scheduled time at the moment its tenant last became claimable: after cluster downtime, a database outage or a tenant pause. A run that is merely queued behind its own tenant's cap is late but has not misfired, so a large `SKIP` burst runs in full instead of losing its tail (`BurstSkipIT`). "Became claimable" is the later of the tenant's last unpause (`tenant.resumed_at`) and the start of the live nodes' unbroken heartbeats (`scheduler_node.alive_since`, restarted by a heartbeat gap of at least `membership.dead-after`, 6 s). A rolling restart of every node also moves that point, so a run already queued for more than the threshold at that moment counts as misfired. Each job picks a policy (default `FIRE_NOW`):
 
 | Policy | After 3 missed hourly runs | Typical use |
 |---|---|---|
@@ -328,7 +328,7 @@ Responses never contain stack traces, SQL or payload values. Validation errors (
 
 - **Roles.** EMPLOYEE reads schedules (job, next fire times) of their own tenant. ADMIN manages one tenant's jobs, pause, resume and cap. OPERATOR is the platform on-call role: it creates tenants and works across tenants, but only on operational data (states, counts, error codes), never payloads. The full matrix is tested endpoint by endpoint (`RoleMatrixIT`).
 - **Tenant isolation.** The tenant comes only from the token's claim, never from the request body or path. Every repository query takes a `TenantScope` and adds a tenant predicate, so another tenant's row is simply not found: a request for another tenant's job, tenant or dead letter returns `404`, not `403`, and changes nothing (`TenantIsolationIT`).
-- **Tokens.** HS256 JWTs with `roles` and tenant claims, validated by Spring Security's resource server. The secret is `SCHEDULER_JWT_HMAC_SECRET` (at least 32 characters); the compose default is an obviously fake dev key. `/dev/token` exists only in the `dev` profile (`DevTokenIT`, `DevTokenDisabledIT`); in production tokens would come from an identity provider.
+- **Tokens.** HS256 JWTs with `roles` and tenant claims, validated by Spring Security's resource server. The secret is `SCHEDULER_JWT_HMAC_SECRET` (at least 32 characters); the compose default is an obviously fake dev key, and a node outside the `dev`/`test` profiles refuses to start with it (`JwtSecretGuardTest`). `/dev/token` exists only in the `dev` profile (`DevTokenIT`, `DevTokenDisabledIT`); in production tokens would come from an identity provider.
 - **No personal data in logs or errors.** Payloads, which can hold phone numbers, emails and home locations, are never logged or returned to non-admins. JSON logs mask every string value through `PiiValueMasker`, plain-text logs through `PiiMaskingConverter`, as a last line of defence (`PiiMaskingTest`, `LoggingIT`). The sink stores only the SHA-256 of a payload and logs only a key hash (`PayloadPrivacyIT`).
 - The sink's fault-injection API (`/admin/faults`) needs `X-Admin-Token` (`SINK_ADMIN_TOKEN`).
 
@@ -391,10 +391,12 @@ Results of the last full run on the build machine:
 | Module | Unit | Integration | Result |
 |---|---|---|---|
 | `scheduler-core` | 322 | — | all pass |
-| `scheduler-app` | 182 | 257 | 2 skipped (Docker-gated) |
+| `scheduler-app` | 186 | 266 | 2 skipped (Docker-gated); see the note below |
 | `notification-sink` | 47 | 35 | all pass |
 | `loadgen` | 9 | 3 | all pass |
-| **Total** | | | **855 tests, 853 passed, 2 skipped, 0 failures** |
+| **Total** | | | **868 tests, 2 skipped** |
+
+Last full run (2026-10-30, after the misfire, takeover and JWT-secret fixes): every test passed except three throughput and timing checks, `DrainRateIT` (≈ 260 runs/s against a 600 runs/s floor), `TenantFairnessIT` (its 50,000-row bulk insert took 13 s, so it committed after the runs were due) and `RebalanceIT` (7 s wall-clock bound). The same three fail the same way on the unchanged `main` on that day (288 runs/s, 12 s insert), with Docker stopped, so this is the machine, not the change: the system SSD (QLC) was down to 10 GB free and the embedded Postgres writes there. The earlier run with the 698 runs/s drain and the benchmark numbers below passed all three.
 
 Run one test, for example: `./mvnw -B -pl scheduler-app -am verify -Dtest=none -Dsurefire.failIfNoSpecifiedTests=false -Dit.test=NodeCrashIT -Dfailsafe.failIfNoSpecifiedTests=false`.
 
@@ -570,6 +572,7 @@ Still not verified:
 - **Benchmark scope.** All numbers come from one laptop with every process on it; the scaling bottleneck was not isolated. The 2 s p99 target is missed for a few seconds in a dead or frozen node's partitions (above).
 - **Max run time.** A handler that ignores the interrupt at `maxRunTime` is abandoned, not killed (Java cannot stop a thread): the hard stop releases its run, slot and lease, but the thread keeps one worker of the node until it returns.
 - **Retention.** Finished runs are purged after 7 days (`RunPurge`, `scheduler.run-purge.*`) and `api_idempotency` after 24 h, but dead-lettered runs are kept until someone replays them, and the sink's `sink.delivery` (the dedup record) has no retention job.
+- **Compose is a laptop setup.** All three nodes run the `dev` profile, so `/dev/token` is open (see the warning under [Quick start](#quick-start)).
 - No list-jobs endpoint, no `GET /tenants/{t}`, no early lease revocation on cap reduction, no Postgres row-level security (tenant isolation is enforced in every repository query).
 
 ---
