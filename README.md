@@ -34,7 +34,7 @@ It runs on three or more identical nodes with no leader. A node can be killed or
 
 **In this README**
 
-1. [Architecture](#1-architecture)
+1. [Architecture](#1-architecture): the design note, with the architecture diagrams, the sequence diagram of the hardest flow and the [failure-mode table](#failure-modes)
 2. [How to run it](#2-how-to-run-it)
 3. [Benchmark results](#3-benchmark-results)
 4. [Assumptions](#4-assumptions)
@@ -131,6 +131,24 @@ Result: 1,200 employees alerted exactly once. A `kill -9` is the same flow witho
 
 **Why exactly-once execution is impossible:** a node that sent an alert and died before recording it looks the same as one that died before sending. So execution is **at least once**, and the **effect** is exactly once, through idempotency keys and fencing tokens ([details](docs/design/exactly-once-leases-and-fencing.md)).
 
+### Failure modes
+
+| What fails | What the user sees | How the system recovers |
+|---|---|---|
+| Node killed (`kill -9`) mid-run | Alerts pause ≤ 10.7 s, then continue; nobody gets two | The run lease expires; another node's orphan sweep restarts the run in the same slot with a higher token, from its checkpoint; the sink drops repeated items |
+| Node frozen (GC pause, SIGSTOP) | Same as a kill | Another node takes over as above; on wake-up the frozen node stops itself, its in-flight send gets `409`, and its renew and commit match 0 rows |
+| Node lost, its partitions orphaned | New runs in those partitions start up to about 7 s late | Partition leases (6 s) expire and the surviving nodes take the partitions over |
+| Node joins | Nothing | Rendezvous hashing moves only its share of partitions to it |
+| Renewal and slot reuse at the same moment | Nothing | Both are conditional updates of one row; exactly one succeeds |
+| Notification sink down, slow or timing out | Alerts delayed; retries rise | Exponential backoff with jitter, then the dead-letter list; an operator replays with the same key; caps keep the impact to one tenant |
+| Duplicate or out-of-order messages | One effect | Idempotency keys at the sink and the API; every write is conditional on the fencing token and state |
+| PostgreSQL unreachable | No jobs fire; API returns `503 SCHEDULER_STORE_UNAVAILABLE` | Nodes stop starting work; when it returns, misfire policies handle the backlog |
+| PostgreSQL primary fails (production) | Writes pause about 10–30 s; nothing acknowledged is lost | Patroni promotes only the synchronous standby; the new timeline raises the token epoch |
+| Clock skew between nodes | Nothing | Due times and leases use the database clock |
+| Bad payload | Run appears in the dead-letter list as `INVALID_PAYLOAD` | Dead-lettered at once, no retries |
+
+Each row with its detection and the test that proves it: [failure-handling.md](docs/design/failure-handling.md#3-failure-mode-table).
+
 ---
 
 ## 2. How to run it
@@ -156,6 +174,8 @@ docker compose up --build
 | `grafana` | 3000 | Dashboard: http://localhost:3000/d/scheduler-overview (anonymous, or admin / admin) |
 
 `docker compose ps` shows when all eight are `healthy`.
+
+`POST /dev/token`, used below to mint demo tokens, exists only in the `dev` profile that compose enables for the demo. Without `dev` the endpoint is absent, and a node refuses to start unless `SCHEDULER_JWT_HMAC_SECRET` is set to a real secret ([security](docs/design/security-and-tenant-isolation.md)).
 
 ### First API calls
 
