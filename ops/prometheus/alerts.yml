@@ -1,6 +1,6 @@
 # Alert rules for every "Alert when" of PLAN.md section 14. Loaded by prometheus.yml (rule_files).
 #
-# Conventions (checked by OpsMetricReferencesTest / AlertRulesTest):
+# Conventions (checked by AlertRulesTest):
 #   - every rule has labels severity (critical | warning | info) and summary, and an annotation
 #     runbook_url pointing at the matching heading in docs/RUNBOOK.md;
 #   - only metric names listed in ops/metric-names.txt are used.

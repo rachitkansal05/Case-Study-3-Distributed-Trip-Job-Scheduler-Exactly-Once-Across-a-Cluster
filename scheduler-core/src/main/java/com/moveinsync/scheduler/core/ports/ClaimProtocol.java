@@ -42,8 +42,9 @@ import java.util.Set;
  * </ol>
  *
  * <p>A {@code false} result from any fenced method means the caller has lost the run: it must stop
- * the handler, send nothing more, count {@code scheduler_lease_lost_total}, and (for commits)
- * raise {@code StaleFencingTokenException} / count {@code scheduler_stale_commit_rejected_total}.
+ * the handler, send nothing more, count {@code scheduler_lease_lost_total}, and (for commits) also
+ * count {@code scheduler_stale_commit_rejected_total}. Nothing is thrown: a rejected commit is an
+ * expected outcome, not an error.
  *
  * <p>Infrastructure failures (database unreachable) are thrown as unchecked exceptions.
  */

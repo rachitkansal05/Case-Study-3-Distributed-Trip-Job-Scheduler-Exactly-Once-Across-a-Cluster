@@ -1,7 +1,7 @@
 # Every Prometheus series name that ops/grafana/dashboards/*.json, ops/prometheus/alerts.yml and
 # docs/RUNBOOK.md may reference. Kept in sync with the code by tests:
-#   - OpsMetricReferencesTest (scheduler-app): every PromQL expression in the dashboard, the alert
-#     rules and the runbook uses only names listed here;
+#   - AlertRulesTest, GrafanaDashboardTest and RunbookTest (scheduler-app): every PromQL expression
+#     in the alert rules, the dashboard and the runbook uses only names listed here;
 #   - MetricsIT (scheduler-app): every [scheduler] name is really exported on /actuator/prometheus
 #     by a running node (names come from EngineMetrics, Micrometer JVM/Hikari/cache binders);
 #   - OpsMetricNamesIT (notification-sink): every [sink] name is exported by the sink.
