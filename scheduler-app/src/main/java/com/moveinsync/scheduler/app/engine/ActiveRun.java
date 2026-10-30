@@ -9,6 +9,9 @@ import java.util.concurrent.Future;
 /**
  * One run executing on this node: its claim, its self-fence ({@link LeaseClock}), and the worker
  * thread to interrupt when the lease is lost or the max run time passes. Thread-safe.
+ *
+ * <p>The attempt's outcome is written once: by the worker, or by the engine's hard stop when the
+ * handler ignores the max-run-time interrupt ({@link #takeCommit()} decides who).
  */
 final class ActiveRun {
 
@@ -17,9 +20,12 @@ final class ActiveRun {
     private volatile LeaseClock leaseClock;
     private volatile LeaseLostReason lost;
     private volatile boolean timedOut;
+    private volatile boolean hardStopped;
     private boolean finished;
+    private boolean commitTaken;
     private Future<?> renewTask;
     private Future<?> timeoutTask;
+    private Future<?> hardStopTask;
 
     ActiveRun(ClaimedRun run, LeaseClock leaseClock, Thread worker) {
         this.run = Objects.requireNonNull(run, "run");
@@ -73,9 +79,33 @@ final class ActiveRun {
         }
     }
 
-    synchronized void tasks(Future<?> renew, Future<?> timeout) {
+    /**
+     * The right to write this attempt's outcome (commit or failure): true for exactly one caller,
+     * the worker or the hard stop, so a late worker never writes over the hard stop's TIMEOUT.
+     */
+    synchronized boolean takeCommit() {
+        if (commitTaken) {
+            return false;
+        }
+        commitTaken = true;
+        return true;
+    }
+
+    /** The engine recorded TIMEOUT for a handler that did not stop: no renewals, no interrupts. */
+    synchronized void hardStop() {
+        hardStopped = true;
+        finish();
+    }
+
+    /** True once the hard stop wrote this attempt's outcome; the worker then writes nothing. */
+    boolean hardStopped() {
+        return hardStopped;
+    }
+
+    synchronized void tasks(Future<?> renew, Future<?> timeout, Future<?> hardStop) {
         this.renewTask = renew;
         this.timeoutTask = timeout;
+        this.hardStopTask = hardStop;
     }
 
     /** Ends the run: no more interrupts, background tasks cancelled. */
@@ -86,6 +116,9 @@ final class ActiveRun {
         }
         if (timeoutTask != null) {
             timeoutTask.cancel(false);
+        }
+        if (hardStopTask != null) {
+            hardStopTask.cancel(false);
         }
     }
 

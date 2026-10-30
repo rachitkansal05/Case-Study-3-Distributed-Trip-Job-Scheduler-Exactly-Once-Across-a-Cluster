@@ -15,7 +15,10 @@ import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 
 /**
- * Renews the lease of every running run every 3 s (plan section 07) and enforces the max run time.
+ * Renews the lease of every running run every 3 s (plan section 07) and enforces the max run time:
+ * at {@code max_run_time} the handler is interrupted ({@link ActiveRun#timeout()}); a handler that
+ * is still running one renew interval later ignored the interrupt, and the hard stop records the
+ * attempt as {@code TIMEOUT} for it and stops renewing its lease.
  *
  * <ul>
  *   <li>The send time is captured <b>before</b> the renew statement, and {@link
@@ -54,8 +57,13 @@ final class LeaseRenewer {
                 Thread.ofPlatform().daemon().name(nodeId + "-renewer").factory());
     }
 
-    /** Starts renewing {@code run} and arms its max-run-time stop. */
-    void register(ActiveRun run) {
+    /**
+     * Starts renewing {@code run} and arms its max-run-time stop.
+     *
+     * @param hardStop runs on its own virtual thread when the handler is still running one renew
+     *     interval after its max run time
+     */
+    void register(ActiveRun run, Runnable hardStop) {
         AtomicBoolean inFlight = new AtomicBoolean();
         long ms = interval.toMillis();
         ScheduledFuture<?> renew = scheduler.scheduleWithFixedDelay(() -> {
@@ -69,9 +77,14 @@ final class LeaseRenewer {
                 });
             }
         }, ms, ms, TimeUnit.MILLISECONDS);
-        ScheduledFuture<?> timeout = scheduler.schedule(run::timeout,
-                run.run().maxRunTime().toMillis(), TimeUnit.MILLISECONDS);
-        run.tasks(renew, timeout);
+        long maxRunMs = run.run().maxRunTime().toMillis();
+        ScheduledFuture<?> timeout = scheduler.schedule(run::timeout, maxRunMs, TimeUnit.MILLISECONDS);
+        ScheduledFuture<?> stuck = scheduler.schedule(() -> {
+            if (gate.isRunning() && !run.finished() && run.timedOut() && run.lost() == null) {
+                Thread.ofVirtual().name(nodeId + "-hard-stop-" + run.run().runId()).start(hardStop);
+            }
+        }, maxRunMs + ms, TimeUnit.MILLISECONDS);
+        run.tasks(renew, timeout, stuck);
     }
 
     private void renew(ActiveRun run) {
