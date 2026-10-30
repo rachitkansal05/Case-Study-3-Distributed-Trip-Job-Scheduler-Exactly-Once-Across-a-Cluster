@@ -31,7 +31,7 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
 /**
- * The role matrix of PLAN.md section 13 (R14), endpoint by endpoint: allowed roles succeed (never
+ * The role matrix of docs/design/architecture.md section 13 (R14), endpoint by endpoint: allowed roles succeed (never
  * 401/403), every other role gets exactly 403 {@code FORBIDDEN}, a missing token 401
  * {@code UNAUTHORIZED} with {@code WWW-Authenticate: Bearer}; and any malformed, expired, unsigned
  * or wrongly signed token is a 401. Health stays open.

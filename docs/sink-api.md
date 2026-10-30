@@ -1,6 +1,6 @@
 # notification-sink HTTP API
 
-`notification-sink` is the mock SMS/push provider that the scheduler calls for every side effect. Execution is at-least-once, so the same effect may be sent many times. The sink makes the *effect* exactly-once (PLAN §02, §07 "Sink fencing"):
+`notification-sink` is the mock SMS/push provider that the scheduler calls for every side effect. Execution is at-least-once, so the same effect may be sent many times. The sink makes the *effect* exactly-once ([architecture.md](design/architecture.md) §02, §07 "Sink fencing"):
 
 - **Idempotency key.** At most one delivery is recorded per `Idempotency-Key`. Repeats return `ALREADY_DELIVERED`.
 - **Fencing token.** The sink keeps the highest `(epoch, seq)` it has accepted for each run. A request with a lower token is rejected with `409 STALE_TOKEN` and delivers nothing.
@@ -122,7 +122,7 @@ Content-Type: application/problem+json
 | Status | `code` / `outcome` | `DeliveryOutcome` | Client action |
 |---|---|---|---|
 | 201 | `outcome: DELIVERED` | `DELIVERED` | success |
-| 200 | `outcome: ALREADY_DELIVERED` | `ALREADY_DELIVERED` | success (PLAN §12: treat as delivered) |
+| 200 | `outcome: ALREADY_DELIVERED` | `ALREADY_DELIVERED` | success (architecture.md §12: treat as delivered) |
 | 409 | `code: STALE_TOKEN` | `STALE_TOKEN` | lease lost: stop the handler; not a job failure (`LeaseLostReason.STALE_TOKEN`) |
 | 400 / 415 | any | none: throw (bug in the client or job data) | do not retry with the same request |
 | 500 / 503, timeout, connection error | any | none: throw an unchecked exception | retryable; resend the same key and token |
@@ -176,7 +176,7 @@ curl -s 'http://localhost:8090/api/v1/deliveries/stats?runId=77'
 
 `runs` is the number of runs with a fence row. **`maxDeliveriesPerKey` is the exactly-once proof**: it is `1` whenever anything has been delivered, and `0` when nothing has. The primary key on `idem_key` enforces it; the endpoint measures it independently. This call scans the tables, so it is meant for tests and demos.
 
-### `GET /api/v1/fence/highest-epoch`: startup epoch guard (PLAN F5)
+### `GET /api/v1/fence/highest-epoch`: startup epoch guard (architecture.md F5)
 
 ```json
 {"highestEpoch":7}

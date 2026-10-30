@@ -2,7 +2,7 @@ global:
   scrape_interval: 5s
   evaluation_interval: 5s
 
-# PLAN.md section 14 alert rules; mounted next to this file by docker-compose.yml.
+# docs/design/architecture.md section 14 alert rules; mounted next to this file by docker-compose.yml.
 rule_files:
   - /etc/prometheus/alerts.yml
 

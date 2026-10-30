@@ -1,8 +1,17 @@
-# Benchmark results
+# Performance: benchmark, capacity and cost
 
-Measured numbers for PLAN §17 (R13). Every figure here comes from a run on the machine below; the
-raw reports (Markdown plus a per-run lag CSV) are written to `loadgen/target/bench/` by each run.
-Nothing is estimated or extrapolated unless it says so.
+> Design docs index: [README.md](README.md) · Full design: [architecture.md §17](architecture.md#17-benchmark-plan-and-capacity-math)
+
+**Requirement:** 100,000 jobs due within one 10-minute window on three nodes, p99 fire lag under
+2 seconds, plus the kill and freeze tests; analyse time and space complexity, back it with a
+benchmark and say where the system stops scaling and why.
+
+**Result:** met. p99 237 ms on the plain run, p99 291 ms with a node killed and another frozen,
+0 duplicates in every run. The knee on this laptop is 900–1,000 runs/s.
+
+Every figure here comes from a run on the machine below; the raw reports (Markdown plus a
+per-run lag CSV) are written to `loadgen/target/bench/` by each run. Nothing is estimated or
+extrapolated unless it says so.
 
 ## 1. Machine and software
 
@@ -18,7 +27,7 @@ Collected with PowerShell / CIM (`Win32_Processor`, `Win32_PhysicalMemory`, `Get
 | JDK | Java HotSpot 64-Bit Server VM 22.0.2+9-70 (code compiled with `--release 21`) |
 | Benchmark JVM flags | `-Xmx4g -Xms1g -XX:+UseG1GC` (the 3 scheduler nodes share this JVM) |
 | Sink JVM | separate process, `-Xmx768m -XX:+UseG1GC`, Hikari pool 40 |
-| Docker | none (everything in-process or as a local process) |
+| Docker | not used by the benchmark (everything in-process or as a local process) |
 
 **PostgreSQL** (zonky embedded binaries, one server shared by the scheduler and sink databases,
 like the compose setup), as read back with `SHOW`:
@@ -66,7 +75,7 @@ Its name does not match `*IT`, so `./mvnw verify` never runs it.
 `-Pbench` only sizes the forked JVM. The run fails if any duplicate is found,
 `maxDeliveriesPerKey` is not 1, or runs are left unfinished.
 
-**Against a running compose stack** (when Docker is available; not run here):
+**Against a running compose stack** (implemented, not yet run against a live stack):
 
 ```bash
 ./mvnw -B -pl loadgen -am package -DskipTests
@@ -136,7 +145,7 @@ B's 20 lags (ms): 39.0, 39.4, 39.7, 129.9, 133.3, 135.1, 136.9, 138.6, 140.5, 14
 148.5, 178.9, 180.2, 181.1, 182.0, 183.0, 183.8, 184.5. Duplicates 0, maxDeliveriesPerKey 1,
 dead letters 0.
 
-PLAN §10 predicts 62.5 s for A (32 slots / 40 ms = 800 runs/s). The measured rate is 698 runs/s,
+The design ([architecture.md §10](architecture.md#10-per-tenant-fairness-with-numbers)) predicts 62.5 s for A (32 slots / 40 ms = 800 runs/s). The measured rate is 698 runs/s,
 or 71.6 s. Each A run holds its slot for longer than the sink call (20–60 ms, mean 40 ms): it
 also holds it through the checkpoint, the fenced commit and the claim round trip that refills
 the slot. That comes to about 46 ms, and 32 / 0.046 s ≈ 700 runs/s. Before the slot-refill
@@ -190,7 +199,7 @@ seconds after the event.** The cause is partition handover, not takeover delay:
 - *Running* runs are taken over by the orphan sweep after their 10 s lease. Their lag was already
   recorded at their first start, so the takeover does not show up in these tables.
 - *New* due runs in the victim's partitions wait until its 6 s partition lease expires and a live
-  node acquires the partition. PLAN §12 says such runs "wait up to about 7 s".
+  node acquires the partition. [architecture.md §12](architecture.md#12-failure-mode-table) says such runs "wait up to about 7 s".
 
 The worst lag was 4.4 s after the kill and 7.2 s after the freeze. The freeze is worse because
 the frozen node had renewed its partition leases just before freezing, and the freeze also
@@ -254,7 +263,7 @@ What these numbers do and do not show:
 
 - Every step ran at its target rate. Above the knee, runs are not failing; they are queueing,
   and lag grows to 9–16 s within the step.
-- PLAN §17 guessed that PostgreSQL alone would handle 5–10k state transitions/s on commodity
+- The design (architecture.md §17) guessed that PostgreSQL alone would handle 5–10k state transitions/s on commodity
   disks. The measured knee is lower, but it is not a database-only limit: the scheduler JVM, the
   sink JVM and PostgreSQL share 6 cores, and CPU reached 91–100 % in the failing steps.
 - These runs did **not** isolate the cause. The likely one is the poller. Each node claims per
@@ -264,7 +273,7 @@ What these numbers do and do not show:
   Confirming this needs a profile, or a run with PostgreSQL on separate hardware.
 - Scaling past this point should start with that measurement. If the poller is the limit, the
   next step is to claim several tenants per transaction, or to run claims in parallel on each
-  node. If PostgreSQL is the limit, the next step is PLAN §17's: shard by partition range.
+  node. If PostgreSQL is the limit, the next step is the one in architecture.md §17: shard by partition range.
 
 ## 4. Notes and caveats
 
@@ -273,11 +282,61 @@ What these numbers do and do not show:
   is the way to repeat them across containers.
 - **Durability on.** `fsync`, `synchronous_commit` and `full_page_writes` were on, checked with
   `SHOW` (zonky's defaults turn them off). There is no replication, so there is no synchronous
-  standby round trip; PLAN §17 estimates that adds about 1 ms per commit.
+  standby round trip; architecture.md §17 estimates that adds about 1 ms per commit.
 - **Lag is measured at the first start.** A run taken over later keeps its original
   `started_at`, so takeover delay does not appear in fire lag. It shows up in the takeover
   counters and is measured directly by `NodeCrashIT` and `EndToEndKillIT`.
 - **Minute 7 of the spread run** had a p99 of 310 ms and a max of 849 ms with no chaos event. It
   was one short stall on the shared machine.
-- **Not run here:** compose mode (`LoadGenMain`) and the chaos scripts against Docker. There is
-  no Docker on this machine.
+- **Compose mode not run yet.** `LoadGenMain` has not been run against a live compose stack. The
+  chaos scripts were run on Docker (2026-10-30) and passed; see
+  [failure-handling.md](failure-handling.md#5-chaos-scripts-on-docker).
+
+## 5. Time and space complexity
+
+| Operation | Time | Space |
+|---|---|---|
+| Claim (per poll and tenant) | O(log R + b): R due runs in owned partitions via the partial index `run_due (partition_id, tenant_id, priority, due_at)`, b rows claimed | O(b) |
+| Claim per poll tick | O(T · log R + b) for T tenants with due runs | O(b) |
+| Fenced renew / checkpoint / commit | O(1): primary-key update | O(1) |
+| Orphan sweep | O(log E + k): E expired runs via `run_expired`, k taken over | O(k) |
+| Partition assignment | O(P · N) hashes per membership change (128 × 3 = 384) | O(P) |
+| Materialisation | O(occurrences in the next 15 minutes) per pass, at most 1,000 per job | one `job_run` row per occurrence |
+| Node memory | O(workers + batch), **not** O(jobs) | queues hold claimed runs only |
+| Storage | — | one `job_run` row per run, kept 7 days after it finishes; one `sink.delivery` row per delivered item |
+
+## 6. Capacity summary
+
+| Quantity | Value | Basis |
+|---|---|---|
+| Arrival rate for the target | 167 runs/s | 100,000 / 600 s; measured p99 237 ms |
+| Knee (p99 > 2 s) | **900–1,000 runs/s** | §3.4, about 5.5× the target rate |
+| State transitions at the knee | about 2,700–3,000 /s | 3 per run: claim, checkpoint, commit |
+| Typical lag | about 105 ms p50 | half the 200 ms poll plus the claim |
+| Single-tenant drain at cap 32 | 614–698 runs/s | `DrainRateIT`, §3.2 |
+| Takeover after `kill -9` | ≤ 10.7 s bound; 9.99–10.15 s measured | 10 s lease + 0.5 s sweep + 0.2 s claim (`NodeCrashIT`) |
+| New runs in a dead node's partitions | up to about 7 s | 6 s partition lease + 1 s loop (`RebalanceIT`) |
+| Partition balance | max/min about 1.3 | rendezvous hashing; compose ids give 39 / 40 / 49 |
+| Useful node count | about 40 | 128 partitions |
+
+**Where it stops scaling, in short:** the knee above is a CPU-bound laptop where the nodes, the
+sink and Postgres share 6 cores; the bottleneck was not isolated. The leading hypothesis is the
+single-threaded per-tenant claim loop (up to 50 claim transactions per node per 200 ms tick). If
+that is the limit, claim several tenants per transaction or in parallel; if Postgres is, shard
+by partition range (the partitions already give the routing key).
+
+## 7. Resource and cost estimate
+
+For the target load (100,000 alerts in a 10-minute peak), derived from the measurements above.
+Prices are left out on purpose: multiply by your provider's rates.
+
+| Component | Sizing | Reasoning |
+|---|---|---|
+| Scheduler nodes | 3 × (2 vCPU, 2–4 GB RAM) | During the spread run the whole laptop (3 nodes, sink and Postgres) averaged 15 % of 12 threads and peaked at 52 %. Three nodes are the minimum for the failure model, not for throughput |
+| PostgreSQL | 1 primary + 2 standbys, about 4 vCPU and 8–16 GB RAM each, SSD | One synchronous standby for durability on failover; the third member lets Patroni promote and still keep one. About 5× headroom at the target |
+| Patroni coordination | 3 small etcd members | Leader lease and the synchronous-standby record |
+| Monitoring | 1 small Prometheus + Grafana | 4 scrape targets every 5 s |
+| Storage growth | about 7 × the daily run count in `job_run` | `RunPurge` deletes finished runs after 7 days; dead letters stay until replayed |
+
+The dominant cost is the replicated Postgres, which is the price of the exactly-once and
+failover guarantees.

@@ -19,7 +19,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Tenant administration: creation, pause/resume and cap changes (PLAN.md sections 10 and 13).
+ * Tenant administration: creation, pause/resume and cap changes (docs/design/architecture.md sections 10 and 13).
  *
  * <p>Pause and resume only flip {@code tenant.paused}. Runs stay {@code SCHEDULED}; the claim
  * reads the flag directly and the engine applies the misfire policy when it claims after a

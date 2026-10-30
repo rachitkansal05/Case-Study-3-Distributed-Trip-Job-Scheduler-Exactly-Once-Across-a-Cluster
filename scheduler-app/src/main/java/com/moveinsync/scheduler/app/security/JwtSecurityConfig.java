@@ -33,7 +33,7 @@ import org.springframework.security.oauth2.server.resource.web.authentication.Be
 import org.springframework.security.web.SecurityFilterChain;
 
 /**
- * Stateless HS256 JWT resource server with the role matrix of PLAN.md section 13. Roles are
+ * Stateless HS256 JWT resource server with the role matrix of docs/design/architecture.md section 13. Roles are
  * checked here, per method and path; tenant isolation is enforced below, by {@link TenantScope}
  * in every repository query.
  *

@@ -14,7 +14,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cache.CacheManager;
 
 /**
- * Caching and its staleness bounds (PLAN.md section 14, R9): next fire times are cached per
+ * Caching and its staleness bounds (docs/design/architecture.md section 14, R9): next fire times are cached per
  * {@code (jobId, version, count)}, tenant settings (time zone) for at most 5 s, and only those two
  * caches exist. The pause flag and the cap are never cached, so their changes are visible on the
  * very next read.

@@ -10,7 +10,7 @@ import org.springframework.stereotype.Component;
 
 /**
  * Cached next fire times of a recurring job, keyed by {@code (jobId, version, count)} with a 30 s
- * TTL (PLAN.md section 14). The result is a pure function of cron, zone and version; within the
+ * TTL (docs/design/architecture.md section 14). The result is a pure function of cron, zone and version; within the
  * TTL the list may include an instant that has just passed. A separate bean so the
  * {@code @Cacheable} proxy applies.
  */

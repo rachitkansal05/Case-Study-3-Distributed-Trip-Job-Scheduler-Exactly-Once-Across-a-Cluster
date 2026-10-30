@@ -16,7 +16,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-/** The dead-letter list and operator replay (PLAN.md section 09). */
+/** The dead-letter list and operator replay (docs/design/architecture.md section 09). */
 @Service
 public class DeadLetterService {
 

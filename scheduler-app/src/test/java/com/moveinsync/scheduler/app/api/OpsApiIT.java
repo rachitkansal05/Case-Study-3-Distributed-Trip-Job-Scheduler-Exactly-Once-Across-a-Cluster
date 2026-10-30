@@ -17,7 +17,7 @@ import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
 /**
- * The operations API (PLAN.md section 13, R9): pause/resume only flip {@code tenant.paused},
+ * The operations API (docs/design/architecture.md section 13, R9): pause/resume only flip {@code tenant.paused},
  * manual triggers are deduplicated by {@code Idempotency-Key} into one {@code job_run}, delete
  * disables the job and cancels only unstarted runs, run history pages and shows error codes only,
  * dead-letter replay reuses the same run row and idempotency key, next fire times honour count

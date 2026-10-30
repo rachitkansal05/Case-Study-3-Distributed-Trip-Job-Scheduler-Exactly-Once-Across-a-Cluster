@@ -17,7 +17,7 @@ import java.util.stream.IntStream;
 import org.junit.jupiter.api.Test;
 
 /**
- * Tenant creation and cap changes (PLAN.md section 10 "Changing a cap", R7): the effective cap is
+ * Tenant creation and cap changes (docs/design/architecture.md section 10 "Changing a cap", R7): the effective cap is
  * the number of {@code tenant_slot} rows; raising inserts the missing rows at once, lowering
  * deletes only free rows at or above the new cap (a slot held by a RUNNING run survives and the
  * tenant reports {@code draining}), and concurrent changes serialise on the tenant row so the slot

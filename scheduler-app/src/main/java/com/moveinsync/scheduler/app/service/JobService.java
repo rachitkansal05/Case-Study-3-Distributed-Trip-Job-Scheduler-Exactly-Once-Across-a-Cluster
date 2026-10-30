@@ -33,7 +33,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Job definitions: create, read, next fire times and disable (PLAN.md sections 08 and 13).
+ * Job definitions: create, read, next fire times and disable (docs/design/architecture.md sections 08 and 13).
  *
  * <p>Creating a job stores only the definition, with {@code next_fire_at} set (one-off:
  * {@code run_at}; recurring: the first fire time after now) and version 1. Runs are created by

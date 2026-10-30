@@ -1,5 +1,5 @@
 # Production-shaped PostgreSQL for the scheduler: 3 etcd + 3 Patroni/PostgreSQL 16 + HAProxy.
-# PLAN.md section 12 "Failover requirements (production)" F1-F5; see deploy/patroni/README.md.
+# docs/design/architecture.md section 12 "Failover requirements (production)" F1-F5; see deploy/patroni/README.md.
 #
 #   docker compose -f deploy/patroni/docker-compose.patroni.yml up -d --build
 #

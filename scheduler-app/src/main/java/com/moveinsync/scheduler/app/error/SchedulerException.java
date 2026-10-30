@@ -4,7 +4,7 @@ import java.util.Objects;
 import org.springframework.http.HttpStatus;
 
 /**
- * Root of the API's typed exception hierarchy (PLAN.md section 14). Each subclass fixes the HTTP
+ * Root of the API's typed exception hierarchy (docs/design/architecture.md section 14). Each subclass fixes the HTTP
  * status; the {@link #code()} is a stable, machine-readable identifier and the message is safe to
  * show to a client: it never contains payload values, SQL or stack traces.
  */

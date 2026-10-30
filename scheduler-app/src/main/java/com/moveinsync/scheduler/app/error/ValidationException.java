@@ -4,7 +4,7 @@ import java.util.List;
 import org.springframework.http.HttpStatus;
 
 /**
- * 400. Carries the names of the offending fields, never their values (PLAN.md section 14).
+ * 400. Carries the names of the offending fields, never their values (docs/design/architecture.md section 14).
  */
 public final class ValidationException extends SchedulerException {
 

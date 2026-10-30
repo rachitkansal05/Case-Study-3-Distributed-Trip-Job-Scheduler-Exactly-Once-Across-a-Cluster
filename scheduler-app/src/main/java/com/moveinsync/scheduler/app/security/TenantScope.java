@@ -10,7 +10,7 @@ import org.springframework.jdbc.core.simple.JdbcClient.StatementSpec;
  *
  * <p>Every repository method takes a scope and adds its {@link #predicate(String) predicate} to
  * the {@code WHERE} clause, so a row of another tenant is simply not found. Services turn "not
- * found" into a 404, which also covers other tenants' rows (PLAN.md section 13: 404, not 403).
+ * found" into a 404, which also covers other tenants' rows (docs/design/architecture.md section 13: 404, not 403).
  */
 public final class TenantScope {
 

@@ -31,7 +31,7 @@ PSQL='docker compose exec -T postgres psql -U scheduler -d scheduler -c'
 
 Say: three identical scheduler nodes, Postgres as the only coordinator and clock, a mock SMS/push provider that enforces idempotency keys and fencing tokens. The claim to prove: a node can be killed or frozen mid-send and every employee still gets exactly one alert.
 
-Show the architecture diagram in `docs/DESIGN.md` §1.
+Show the two architecture diagrams and the sequence diagram in the README (`docs/images/`).
 
 ## 0:30 The cluster is up (45 s)
 
@@ -160,6 +160,6 @@ Show a finished `./mvnw -B verify` (about 6 minutes, recorded beforehand): **868
   -Dit.test='FencingIT,TenantIsolationIT' -Dfailsafe.failIfNoSpecifiedTests=false
 ```
 
-Then the benchmark table from `README.md` / `docs/BENCHMARK.md`: 100,000 jobs over 10 minutes on 3 nodes, **p99 237 ms** against the 2 s target, 0 duplicates; with a kill and a 30 s freeze, p99 291 ms overall and 0 duplicates, but p99 3.7 s / 5.3 s for runs that fell due in the victim's partitions during the next minute, because new runs there wait for the 6 s partition lease. The knee on this laptop is between 900 and 1,000 runs/s.
+Then the benchmark table from `README.md` / `docs/design/performance-and-benchmark.md`: 100,000 jobs over 10 minutes on 3 nodes, **p99 237 ms** against the 2 s target, 0 duplicates; with a kill and a 30 s freeze, p99 291 ms overall and 0 duplicates, but p99 3.7 s / 5.3 s for runs that fell due in the victim's partitions during the next minute, because new runs there wait for the 6 s partition lease. The knee on this laptop is between 900 and 1,000 runs/s.
 
-Close on the limits slide: `README.md` "Known limitations".
+Close on the limits slide: the "Honest caveat" in `README.md` §3 and the "Known limits" sections of the design docs.

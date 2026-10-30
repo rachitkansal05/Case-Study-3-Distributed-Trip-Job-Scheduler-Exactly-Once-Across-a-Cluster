@@ -1,6 +1,6 @@
 # On-call runbook: trip job scheduler
 
-This runbook is for the on-call OPERATOR of the scheduler cluster. Every alert in [`ops/prometheus/alerts.yml`](../ops/prometheus/alerts.yml) links to a section here through its `runbook_url`. Design background is in [`PLAN.md`](../PLAN.md) (§07 claim and fencing, §09 retries and dead letters, §10 caps, §11 freeze and takeover, §12 failure modes).
+This runbook is for the on-call OPERATOR of the scheduler cluster. Every alert in [`ops/prometheus/alerts.yml`](../ops/prometheus/alerts.yml) links to a section here through its `runbook_url`. Design background is in [`docs/design/architecture.md`](design/architecture.md) (§07 claim and fencing, §09 retries and dead letters, §10 caps, §11 freeze and takeover, §12 failure modes).
 
 **Where things are (compose demo):**
 
@@ -704,7 +704,7 @@ up{job=~"scheduler|notification-sink"} == 0
 
 **Safe actions**
 - `docker compose up -d scheduler-2` (or `unpause`). Safe at any time.
-- Epoch guard refusing to start after a rebuild (PLAN F5): get a second person to confirm the database really is a fresh `initdb`, then **raise** the generation by one. This is the only manual write in this runbook:
+- Epoch guard refusing to start after a rebuild (architecture.md F5): get a second person to confirm the database really is a fresh `initdb`, then **raise** the generation by one. This is the only manual write in this runbook:
 
   ```sql
   UPDATE cluster_meta SET cluster_generation = cluster_generation + 1;

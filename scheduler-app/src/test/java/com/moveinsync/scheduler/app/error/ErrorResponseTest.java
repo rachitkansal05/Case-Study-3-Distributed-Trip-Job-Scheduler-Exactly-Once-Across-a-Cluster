@@ -36,7 +36,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * Error responses never leak internals (PLAN.md section 14 "Error handling", R14): every exception
+ * Error responses never leak internals (docs/design/architecture.md section 14 "Error handling", R14): every exception
  * the advice can meet becomes an RFC 7807 {@code application/problem+json} body with a stable
  * {@code code}, {@code status} and the request's {@code traceId}, and none of SQL, exception class
  * names, stack frames or rejected (PII) values. Pure MockMvc standalone setup: no Spring Boot
