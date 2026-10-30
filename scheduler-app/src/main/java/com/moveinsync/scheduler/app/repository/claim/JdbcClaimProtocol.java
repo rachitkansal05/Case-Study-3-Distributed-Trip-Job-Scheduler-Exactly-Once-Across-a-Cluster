@@ -140,7 +140,7 @@ public final class JdbcClaimProtocol implements ClaimProtocol {
        due time; run rows are locked after the slot rows, SKIP LOCKED so two nodes polling the same
        partition during a handover take different runs. Disabled jobs never start. */
     static final String CANDIDATES = """
-            SELECT r.id, r.job_id, r.state, r.scheduled_at, j.misfire,
+            SELECT r.id, r.job_id, r.state, r.misfire_exempt, r.scheduled_at, j.misfire,
                    (extract(epoch FROM j.misfire_threshold) * 1000)::bigint AS threshold_ms,
                    clock_timestamp() AS db_now
               FROM job_run r JOIN job j ON j.id = r.job_id
@@ -154,22 +154,25 @@ public final class JdbcClaimProtocol implements ClaimProtocol {
 
     /* Step 3 start (I3, I5, I6): only for a run whose row we locked and a slot whose row we locked.
        New token = (epoch read in this txn, nextval('fence_seq')); lease on the DB clock (I1);
-       started_at keeps the first start (fire lag); attempt + 1. */
+       started_at keeps the first start (fire lag); attempt + 1. first_start reads started_at before
+       this update (the row is already locked by us, so the sub-select sees the version we update):
+       only a run that never started reports fire lag, not a retry and not a replayed dead letter. */
     private static final String START = """
-            UPDATE job_run
+            UPDATE job_run r
                SET state = 'RUNNING', slot_no = ?, owner_node = ?,
                    fencing_epoch = ?, fencing_seq = nextval('fence_seq'),
                    lease_until = clock_timestamp() + ? * interval '1 millisecond',
-                   started_at = coalesce(started_at, clock_timestamp()), finished_at = NULL,
-                   attempt = attempt + 1, coalesced_count = coalesce(?, coalesced_count)
-             WHERE id = ? AND state IN ('SCHEDULED', 'RETRY_WAIT')
-            RETURNING id, job_id, tenant_id, partition_id, job_version, priority, slot_no,
-                      fencing_epoch, fencing_seq, idem_key, scheduled_at, attempt, lease_lost_count,
-                      (extract(epoch FROM max_run_time) * 1000)::bigint AS max_run_time_ms,
-                      clock_timestamp() AS claimed_at, lease_until, checkpoint::text AS checkpoint,
-                      coalesced_count,
-                      (extract(epoch FROM (started_at - scheduled_at)) * 1000)::bigint AS lag_ms,
-                      (SELECT j.handler FROM job j WHERE j.id = job_run.job_id) AS handler
+                   started_at = coalesce(r.started_at, clock_timestamp()), finished_at = NULL,
+                   attempt = r.attempt + 1, coalesced_count = coalesce(?, r.coalesced_count)
+              FROM (SELECT id, started_at IS NULL AS first_start FROM job_run WHERE id = ?) prev
+             WHERE r.id = prev.id AND r.state IN ('SCHEDULED', 'RETRY_WAIT')
+            RETURNING r.id, r.job_id, r.tenant_id, r.partition_id, r.job_version, r.priority, r.slot_no,
+                      r.fencing_epoch, r.fencing_seq, r.idem_key, r.scheduled_at, r.attempt, prev.first_start,
+                      (extract(epoch FROM r.max_run_time) * 1000)::bigint AS max_run_time_ms,
+                      clock_timestamp() AS claimed_at, r.lease_until, r.checkpoint::text AS checkpoint,
+                      r.coalesced_count,
+                      (extract(epoch FROM (r.started_at - r.scheduled_at)) * 1000)::bigint AS lag_ms,
+                      (SELECT j.handler FROM job j WHERE j.id = r.job_id) AS handler
             """;
 
     // ------------------------------------------------------------------ orphan sweep (plan 06.6)
@@ -444,7 +447,7 @@ public final class JdbcClaimProtocol implements ClaimProtocol {
                     while (rs.next()) {
                         candidates.add(new MisfireResolver.Candidate(
                                 rs.getLong("id"), rs.getObject("job_id", UUID.class), rs.getString("state"),
-                                instant(rs, "scheduled_at"), rs.getString("misfire"),
+                                rs.getBoolean("misfire_exempt"), instant(rs, "scheduled_at"), rs.getString("misfire"),
                                 Duration.ofMillis(rs.getLong("threshold_ms")), instant(rs, "db_now")));
                     }
                 }
@@ -612,7 +615,7 @@ public final class JdbcClaimProtocol implements ClaimProtocol {
                     return Optional.empty();
                 }
                 ClaimedRun run = toClaimedRun(rs, recovered);
-                boolean first = !recovered && run.attempt() == 1 && rs.getInt("lease_lost_count") == 0;
+                boolean first = !recovered && rs.getBoolean("first_start");
                 return Optional.of(new Started(run,
                         first ? Duration.ofMillis(Math.max(0, rs.getLong("lag_ms"))) : null));
             }

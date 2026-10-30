@@ -1,0 +1,13 @@
+-- =====================================================================================
+-- V202: misfire exemption for explicitly requested runs (plan section 09).
+--
+-- An operator replay of a dead letter and a manual trigger are explicit requests to run. A replay
+-- keeps the run's original scheduled_at (the occurrence the handler works on, and part of the
+-- idem_key), so the claim used to see it as a misfire and a SKIP or COALESCE job replayed later
+-- than its misfire_threshold was skipped instead of run; a manual run delayed past the threshold
+-- (tenant paused, backlog) was skipped the same way. The claim leaves runs with this flag out of
+-- misfire handling entirely: they are never skipped and never coalesced with the job's other runs.
+--
+-- A constant default makes this a catalog-only change in PostgreSQL 11+ (no table rewrite).
+-- =====================================================================================
+ALTER TABLE job_run ADD COLUMN misfire_exempt BOOLEAN NOT NULL DEFAULT false;
