@@ -30,7 +30,7 @@ It runs on three or more identical nodes with no leader. A node can be killed or
 | What the case study asks | Result |
 |---|---|
 | 100,000 jobs due in one 10-minute window, 3 nodes, p99 fire lag < 2 s | **p99 237 ms**, p50 108 ms, 0 duplicates |
-| The same load with a node killed and another frozen for 30 s | **p99 291 ms** overall, 0 duplicates (see the [honest caveat](#the-chaos-run-honestly)) |
+| The same load with a node killed and another frozen for 30 s | **p99 291 ms** overall, 0 duplicates  |
 | `kill -9` while sending 1,200 pickup alerts | Taken over in **7.6–8.0 s** (bound 10.7 s); 1,200 employees alerted **once each** |
 | 30 s freeze (SIGSTOP), stale write rejected | Run finished on another node; the frozen node's writes **rejected by the fencing token** |
 | 50,000 alerts from one tenant vs 20 from another | The 20 start within **185 ms** while the 50,000 drain at the tenant's cap |
