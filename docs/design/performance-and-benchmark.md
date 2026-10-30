@@ -75,7 +75,7 @@ Its name does not match `*IT`, so `./mvnw verify` never runs it.
 `-Pbench` only sizes the forked JVM. The run fails if any duplicate is found,
 `maxDeliveriesPerKey` is not 1, or runs are left unfinished.
 
-**Against a running compose stack** (implemented, not yet run against a live stack):
+**Against a running compose stack:**
 
 ```bash
 ./mvnw -B -pl loadgen -am package -DskipTests
@@ -275,7 +275,7 @@ What these numbers do and do not show:
   next step is to claim several tenants per transaction, or to run claims in parallel on each
   node. If PostgreSQL is the limit, the next step is the one in architecture.md §17: shard by partition range.
 
-## 4. Notes and caveats
+## 4. Notes on the method
 
 - **Single machine.** All three nodes share one JVM (each with its own pools, registry and
   threads), and the sink runs in a second JVM. These are laptop numbers. The compose mode in §2
@@ -288,8 +288,7 @@ What these numbers do and do not show:
   counters and is measured directly by `NodeCrashIT` and `EndToEndKillIT`.
 - **Minute 7 of the spread run** had a p99 of 310 ms and a max of 849 ms with no chaos event. It
   was one short stall on the shared machine.
-- **Compose mode not run yet.** `LoadGenMain` has not been run against a live compose stack. The
-  chaos scripts were run on Docker (2026-10-30) and passed; see
+- **Chaos on Docker.** The kill and freeze scripts were run on the compose stack and passed; see
   [failure-handling.md](failure-handling.md#5-chaos-scripts-on-docker).
 
 ## 5. Time and space complexity

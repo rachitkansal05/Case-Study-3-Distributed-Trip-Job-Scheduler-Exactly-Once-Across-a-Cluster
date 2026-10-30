@@ -31,3 +31,7 @@ Thumbs.db
 # Local env overrides
 .env
 *.local.yml
+
+# Local working notes (not published)
+PLAN.md
+docs/DEMO.md

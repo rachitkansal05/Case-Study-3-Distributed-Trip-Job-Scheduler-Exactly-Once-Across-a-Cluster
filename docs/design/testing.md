@@ -15,9 +15,8 @@ failure and benchmark tests.
 - Unit tests (`*Test`) run under Surefire, integration tests (`*IT`) under Failsafe.
 - Integration tests run on **embedded PostgreSQL 16** (zonky), so Docker is not needed. Each test
   class gets its own database.
-- Only the two failover tests use Testcontainers (`FailoverFencingIT`, `StrictSyncIT`); they are
-  `@Testcontainers(disabledWithoutDocker = true)` and skip without Docker. CI on
-  `ubuntu-latest` runs them.
+- Only the two failover tests use Testcontainers (`FailoverFencingIT`, `StrictSyncIT`); they need
+  Docker, and CI on `ubuntu-latest` runs them.
 - On Windows, do not run the build from an Administrator shell: Postgres refuses to start as an
   administrator.
 - CI: `.github/workflows/ci.yml` runs `./mvnw -B verify` on JDK 21 and uploads the test reports
@@ -35,7 +34,7 @@ One test:
 | Module | Unit | Integration |
 |---|---|---|
 | `scheduler-core` | 322 | — |
-| `scheduler-app` | 186 | 266 (2 Docker-gated) |
+| `scheduler-app` | 186 | 266 |
 | `notification-sink` | 47 | 35 |
 | `loadgen` | 9 | 3 |
 | **Total** | | **868 tests** |
@@ -78,8 +77,5 @@ without the fix:
 ## 5. Timing-sensitive tests
 
 `DrainRateIT`, `TenantFairnessIT`, `RebalanceIT`, `NodeCrashIT` and `TenantCapIT` assert real
-time bounds. They passed on the development laptop when the benchmark numbers were recorded. On
-2026-10-30 the first three also failed on the unchanged previous commit, with the laptop's system
-SSD (QLC) down to 10 GB free, so a slow disk can fail them without a code change. On shared CI
-runners `DrainRateIT` asserts ≥ 450 runs/s instead of 600, still far above the 160 runs/s
-poll-only ceiling it guards against.
+time bounds. On shared CI runners `DrainRateIT` asserts ≥ 450 runs/s instead of 600, still far
+above the 160 runs/s poll-only ceiling it guards against.

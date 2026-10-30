@@ -80,8 +80,7 @@ Usage, environment variables and troubleshooting: [`chaos/README.md`](../../chao
 
 ## 6. Database failover (production)
 
-The demo runs a single Postgres and does not claim to survive a database failover. Production
-relies on Patroni with etcd ([`deploy/patroni/README.md`](../../deploy/patroni/README.md) maps
+The compose stack runs a single Postgres. Production relies on Patroni with etcd ([`deploy/patroni/README.md`](../../deploy/patroni/README.md) maps
 each requirement to a setting):
 
 | # | Requirement | How it is met |

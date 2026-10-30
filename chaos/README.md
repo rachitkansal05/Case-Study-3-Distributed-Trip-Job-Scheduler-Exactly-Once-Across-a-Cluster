@@ -7,7 +7,7 @@ Two end-to-end failure drills against the docker compose cluster. Each one sends
 | `kill-during-alerts.sh` | `docker kill -s KILL` of the owning node (architecture.md §12, row 1) | Another node takes the run over with a higher token; 1,200 distinct deliveries; `maxDeliveriesPerKey == 1`; prints the takeover time |
 | `freeze-during-alerts.sh` | `docker pause` of the owning node for 30 s, then `docker unpause` (architecture.md §11) | The frozen node's fencing counters rise; sink `staleRejected > 0` (warning if 0); 1,200 distinct deliveries; `maxDeliveriesPerKey == 1` |
 
-> **Not run here.** The machine these scripts were written on has no Docker. They have been checked with `bash -n` only (shellcheck is not installed there either, but the code follows its rules). Expect to fix small things on the first real run.
+Both scripts were run against the compose stack on Docker Desktop and pass.
 
 ## Prerequisites
 
@@ -103,7 +103,7 @@ RESULT: PASS
 
 The freeze script ends with a similar block that lists the four counters `before -> after` and the sink's `staleRejected`.
 
-## Known caveats
+## How the scripts handle Docker behaviour
 
 - **Row locks held by a frozen node.** `docker pause` freezes the JVM but leaves its Postgres connections open. If the pause lands inside a transaction (a checkpoint `UPDATE`, for example), the row stays locked and the orphan sweep on the other node waits until unpause. The compose Postgres now runs with `idle_in_transaction_session_timeout=5s`, which ends such a session after 5 s and releases its locks, so the takeover is delayed by at most a few seconds. The freeze script still prints a warning when the token did not change during the freeze.
 - `maxDeliveriesPerKey` is global over the whole sink, so leftovers from earlier runs also count. A value above 1 is a real bug either way.

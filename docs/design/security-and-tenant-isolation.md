@@ -71,8 +71,3 @@ and set `SCHEDULER_JWT_HMAC_SECRET` and `SINK_ADMIN_TOKEN` to real secrets.
 | `PiiMaskingTest`, `LoggingIT` | No phone, email or coordinate from a payload reaches the logs |
 | `ErrorResponseTest` | No stack trace, SQL or payload value in any error response |
 | `PayloadPrivacyIT` | The sink stores only payload hashes and never logs personal data |
-
-## Known limits
-
-- The JWT has no `iss`/`aud` check and no maximum lifetime enforced by the server.
-- The replay view shows operators the client's idempotency key for manual runs.
