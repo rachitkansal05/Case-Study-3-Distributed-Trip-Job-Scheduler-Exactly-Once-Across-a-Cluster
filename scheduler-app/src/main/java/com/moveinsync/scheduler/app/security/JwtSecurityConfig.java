@@ -95,8 +95,12 @@ public class JwtSecurityConfig {
         return http.build();
     }
 
+    /** The public fallback key in application.yml; anyone can sign tokens with it. */
+    static final String DEV_ONLY_SECRET = "dev-only-insecure-hmac-key-do-not-use-in-prod-0123456789";
+
     @Bean
-    JwtDecoder jwtDecoder(SchedulerProperties properties) {
+    JwtDecoder jwtDecoder(SchedulerProperties properties, Environment env) {
+        requireRealSecret(properties.security().jwtHmacSecret(), env);
         NimbusJwtDecoder decoder = NimbusJwtDecoder
                 .withSecretKey(JwtTokenIssuer.secretKey(properties.security().jwtHmacSecret()))
                 .macAlgorithm(MacAlgorithm.HS256)
@@ -104,6 +108,18 @@ public class JwtSecurityConfig {
         decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(JwtValidators.createDefault(),
                 JwtClaims.validator()));
         return decoder;
+    }
+
+    /**
+     * Refuses to start with the public dev key unless the {@code dev} or {@code test} profile is
+     * active: a node deployed without {@code SCHEDULER_JWT_HMAC_SECRET} would otherwise accept
+     * OPERATOR tokens signed by anyone.
+     */
+    static void requireRealSecret(String secret, Environment env) {
+        if (DEV_ONLY_SECRET.equals(secret) && !env.acceptsProfiles(Profiles.of("dev", "test"))) {
+            throw new IllegalStateException("scheduler.security.jwt-hmac-secret is the public dev-only default; "
+                    + "set SCHEDULER_JWT_HMAC_SECRET (at least 32 characters) or run with the dev profile");
+        }
     }
 
     /** Authorities come from the {@code roles} claim, e.g. {@code ["ADMIN"]} → {@code ROLE_ADMIN}. */
