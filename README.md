@@ -824,7 +824,7 @@ Run one test:
 | Tokens survive failover | `EpochGuardIT`, `ClusterGenerationGuardIT`, `FailoverFencingIT`, `StrictSyncIT` | failure |
 | Partitions move on join and leave | `PartitionAssignerTest`, `RebalanceIT` | unit, failure |
 | Misfire policies | `MisfirePolicyTest`, `MisfireIT`, `BurstSkipIT`, `ReplayMisfireIT` | unit, integration |
-| Fairness and caps | `TenantFairnessIT`, `DrainRateIT`, `TenantCapIT` (no tolerance), `LockOrderIT`, `SchemaIT`, `CapReductionIT` | **concurrency** |
+| Fairness and caps | `TenantFairnessIT`, `DrainRateIT` (≥ 600 runs/s; ≥ 450 on CI runners), `TenantCapIT` (no tolerance), `LockOrderIT`, `SchemaIT`, `CapReductionIT` | **concurrency** |
 | Retries and dead letters | `BackoffPolicyTest`, `RetryDeciderTest`, `RetryToDeadLetterIT`, `FaultInjectionIT` | **failure injection** |
 | Ops API, retry-safe writes, caching | `OpsApiIT`, `ApiIdempotencyIT`, `IdempotencyPurgeIT`, `CachingIT` | integration |
 | Metrics, alerts, dashboard, logs | `MetricsIT`, `AlertRulesTest`, `GrafanaDashboardTest`, `RunbookTest`, `LoggingIT` | integration |
