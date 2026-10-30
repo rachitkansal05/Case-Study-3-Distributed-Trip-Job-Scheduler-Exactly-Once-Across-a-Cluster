@@ -132,4 +132,29 @@ class ClusterStoresIT {
         long a = clock.monotonicNanos();
         assertThat(clock.monotonicNanos()).isGreaterThanOrEqualTo(a);
     }
+
+    private Instant aliveSince(String node) {
+        return db.jdbc().sql("SELECT alive_since FROM scheduler_node WHERE node_id = ?").param(node)
+                .query(java.time.OffsetDateTime.class).single().toInstant();
+    }
+
+    /** V204: alive_since survives regular heartbeats and restarts after a gap of deadAfter or more. */
+    @Test
+    void aliveSinceRestartsOnlyAfterAHeartbeatGap() {
+        members.heartbeat("n1");
+        db.jdbc().sql("UPDATE scheduler_node SET alive_since = clock_timestamp() - interval '1 hour', "
+                + "heartbeat_at = clock_timestamp() - interval '2 seconds' WHERE node_id = 'n1'").update();
+        Instant hourAgo = aliveSince("n1");
+        members.heartbeat("n1"); // 2 s gap < 6 s dead-after: same unbroken run
+        assertThat(aliveSince("n1")).isEqualTo(hourAgo);
+
+        db.jdbc().sql("UPDATE scheduler_node SET heartbeat_at = clock_timestamp() - interval '7 seconds' "
+                + "WHERE node_id = 'n1'").update();
+        members.heartbeat("n1"); // 7 s gap: down or cut off from the DB, so the run restarts
+        assertThat(aliveSince("n1")).isAfter(hourAgo.plus(Duration.ofMinutes(59)));
+
+        db.jdbc().sql("UPDATE scheduler_node SET alive_since = NULL WHERE node_id = 'n1'").update();
+        members.heartbeat("n1"); // a row from before V204 gets a value
+        assertThat(aliveSince("n1")).isNotNull();
+    }
 }

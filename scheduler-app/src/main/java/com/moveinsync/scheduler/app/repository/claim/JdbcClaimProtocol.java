@@ -251,13 +251,14 @@ public final class JdbcClaimProtocol implements ClaimProtocol {
 
     private static final int MAX_LAST_ERROR = 500;
     private static final int MAX_CANDIDATE_ROUNDS = 4;
+    private static final Duration DEFAULT_DEAD_AFTER = Duration.ofSeconds(6);
 
     private final DataSource dataSource;
     private final long runLeaseMs;
     private final RetryDecider retryDecider;
     private final ClaimObserver observer;
     private final FencingEpochReader epochReader = new FencingEpochReader();
-    private final MisfireResolver misfire = new MisfireResolver();
+    private final MisfireResolver misfire;
     private final ClaimHooks hooks;
 
     /**
@@ -268,11 +269,26 @@ public final class JdbcClaimProtocol implements ClaimProtocol {
      */
     public JdbcClaimProtocol(DataSource dataSource, Duration runLease, RetryDecider retryDecider,
                              ClaimObserver observer) {
-        this(dataSource, runLease, retryDecider, observer, ClaimHooks.NONE);
+        this(dataSource, runLease, retryDecider, observer, DEFAULT_DEAD_AFTER, ClaimHooks.NONE);
+    }
+
+    /**
+     * @param deadAfter {@code membership.dead-after}: which nodes count as live for the misfire
+     *     rule ({@link MisfireResolver})
+     */
+    public JdbcClaimProtocol(DataSource dataSource, Duration runLease, RetryDecider retryDecider,
+                             ClaimObserver observer, Duration deadAfter) {
+        this(dataSource, runLease, retryDecider, observer, deadAfter, ClaimHooks.NONE);
     }
 
     JdbcClaimProtocol(DataSource dataSource, Duration runLease, RetryDecider retryDecider,
                       ClaimObserver observer, ClaimHooks hooks) {
+        this(dataSource, runLease, retryDecider, observer, DEFAULT_DEAD_AFTER, hooks);
+    }
+
+    private JdbcClaimProtocol(DataSource dataSource, Duration runLease, RetryDecider retryDecider,
+                              ClaimObserver observer, Duration deadAfter, ClaimHooks hooks) {
+        this.misfire = new MisfireResolver(Objects.requireNonNull(deadAfter, "deadAfter"));
         this.dataSource = Objects.requireNonNull(dataSource, "dataSource");
         this.runLeaseMs = Objects.requireNonNull(runLease, "runLease").toMillis();
         this.retryDecider = Objects.requireNonNull(retryDecider, "retryDecider");
@@ -298,9 +314,11 @@ public final class JdbcClaimProtocol implements ClaimProtocol {
         boolean capRejected = false;
         List<Long> reaped = new ArrayList<>();
         List<Long> reapedDead = new ArrayList<>();
+        List<TakenOver> takenOver = new ArrayList<>();
         try (Connection c = transaction()) {
             try {
-                ClaimOutcome out = claimInTransaction(c, nodeId, tenant, ownedPartitions, maxRuns, reaped, reapedDead);
+                ClaimOutcome out = claimInTransaction(c, nodeId, tenant, ownedPartitions, maxRuns, reaped, reapedDead,
+                        takenOver);
                 c.commit(); // I5: tokens are handed out only after this commit is acknowledged
                 started = out.started();
                 capRejected = out.capRejected();
@@ -322,6 +340,10 @@ public final class JdbcClaimProtocol implements ClaimProtocol {
         if (capRejected) {
             observer.onCapRejected(tenant);
         }
+        for (TakenOver t : takenOver) {
+            runs.add(t.run());
+            observer.onOrphanTakeover(t.run(), t.sinceLastRenewal());
+        }
         for (Started s : started) {
             runs.add(s.run());
             if (s.firstStartLag() != null) {
@@ -339,7 +361,8 @@ public final class JdbcClaimProtocol implements ClaimProtocol {
     }
 
     private ClaimOutcome claimInTransaction(Connection c, String nodeId, TenantId tenant, Set<Integer> owned,
-                                            int maxRuns, List<Long> reaped, List<Long> reapedDead)
+                                            int maxRuns, List<Long> reaped, List<Long> reapedDead,
+                                            List<TakenOver> takenOver)
             throws SQLException {
         int cap;
         try (PreparedStatement ps = c.prepareStatement(TENANT)) {
@@ -404,17 +427,32 @@ public final class JdbcClaimProtocol implements ClaimProtocol {
                 free.add(slot);
             } else if (holder[1] == 1) {
                 hooks.beforeReap(holder[0]);
-                ReapResult r = reap(c, holder[0], tenant.value(), slot).result();
+                Reaped reapedRun = reap(c, holder[0], tenant.value(), slot);
+                ReapResult r = reapedRun.result();
                 hooks.afterReap(holder[0], r != ReapResult.STILL_VALID);
-                if (r != ReapResult.STILL_VALID) {
-                    (r == ReapResult.DEAD_LETTERED ? reapedDead : reaped).add(holder[0]);
+                if (r == ReapResult.DEAD_LETTERED) {
+                    reapedDead.add(holder[0]);
                     free.add(slot);
+                } else if (r == ReapResult.FREED) {
+                    reaped.add(holder[0]);
+                    // Restart the orphan in the slot we just freed, as the sweep does: the reap moved
+                    // it to RETRY_WAIT with due_at = now, so leaving it to the candidate scan would
+                    // queue it behind the tenant's backlog (or strand it in a partition we do not own).
+                    Instant lastRenewal = reapedRun.expiredLease().minusMillis(runLeaseMs);
+                    Optional<ClaimedRun> restarted = start(c, holder[0], slot, nodeId, epoch, null, true)
+                            .map(Started::run);
+                    if (restarted.isPresent()) {
+                        takenOver.add(new TakenOver(restarted.get(),
+                                nonNegative(Duration.between(lastRenewal, restarted.get().claimedAt()))));
+                    } else {
+                        free.add(slot);
+                    }
                 }
             }
             // a holder with a valid lease keeps its slot; we only hold the row lock until commit
         }
         if (free.isEmpty()) {
-            return new ClaimOutcome(List.of(), true);
+            return new ClaimOutcome(List.of(), takenOver.isEmpty());
         }
         return new ClaimOutcome(startDue(c, nodeId, tenant, partitions, epoch, free), false);
     }
@@ -435,7 +473,7 @@ public final class JdbcClaimProtocol implements ClaimProtocol {
                                       List<Integer> freeSlots) throws SQLException {
         List<MisfireResolver.Start> starts = new ArrayList<>();
         List<Long> seen = new ArrayList<>();
-        MisfireResolver.Session session = misfire.session(c);
+        MisfireResolver.Session session = misfire.session(c, tenant.value());
         for (int round = 0; round < MAX_CANDIDATE_ROUNDS && starts.size() < freeSlots.size(); round++) {
             List<MisfireResolver.Candidate> candidates = new ArrayList<>();
             try (PreparedStatement ps = c.prepareStatement(CANDIDATES)) {

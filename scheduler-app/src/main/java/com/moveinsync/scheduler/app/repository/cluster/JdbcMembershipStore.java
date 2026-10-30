@@ -14,11 +14,19 @@ import org.springframework.jdbc.core.simple.JdbcClient;
  */
 public final class JdbcMembershipStore implements MembershipStore {
 
-    /* Heartbeat on the DB clock; started_at is set once, on first registration. */
+    /* Heartbeat on the DB clock; started_at is set once, on first registration. alive_since
+       (V204) restarts when the previous heartbeat is at least deadAfter old (the node was down or
+       could not reach the DB); the claim's misfire rule reads it. In SET, scheduler_node.* is the
+       row before this update. */
     private static final String HEARTBEAT = """
-            INSERT INTO scheduler_node (node_id, heartbeat_at, started_at)
-            VALUES (:n, clock_timestamp(), clock_timestamp())
-            ON CONFLICT (node_id) DO UPDATE SET heartbeat_at = clock_timestamp()
+            INSERT INTO scheduler_node (node_id, heartbeat_at, started_at, alive_since)
+            VALUES (:n, clock_timestamp(), clock_timestamp(), clock_timestamp())
+            ON CONFLICT (node_id) DO UPDATE
+               SET heartbeat_at = clock_timestamp(),
+                   alive_since = CASE
+                       WHEN scheduler_node.alive_since IS NULL
+                         OR scheduler_node.heartbeat_at <= clock_timestamp() - :deadMs * interval '1 millisecond'
+                       THEN clock_timestamp() ELSE scheduler_node.alive_since END
             """;
 
     /* Live = heartbeat younger than deadAfter by DB time (clock_timestamp(), not node time). */
@@ -31,14 +39,22 @@ public final class JdbcMembershipStore implements MembershipStore {
     private static final String DEREGISTER = "DELETE FROM scheduler_node WHERE node_id = :n";
 
     private final JdbcClient jdbc;
+    private final long deadAfterMs;
 
+    /** With the default {@code membership.dead-after} of 6 s. */
     public JdbcMembershipStore(DataSource dataSource) {
+        this(dataSource, Duration.ofSeconds(6));
+    }
+
+    /** @param deadAfter a heartbeat gap at least this long restarts the node's {@code alive_since} */
+    public JdbcMembershipStore(DataSource dataSource, Duration deadAfter) {
         this.jdbc = JdbcClient.create(Objects.requireNonNull(dataSource, "dataSource"));
+        this.deadAfterMs = Objects.requireNonNull(deadAfter, "deadAfter").toMillis();
     }
 
     @Override
     public void heartbeat(String nodeId) {
-        jdbc.sql(HEARTBEAT).param("n", nodeId).update();
+        jdbc.sql(HEARTBEAT).param("n", nodeId).param("deadMs", deadAfterMs).update();
     }
 
     @Override

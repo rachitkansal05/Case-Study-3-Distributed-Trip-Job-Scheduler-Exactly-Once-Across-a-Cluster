@@ -128,4 +128,101 @@ class MisfireIT {
                 .param(run).update();
         assertThat(claim("mf-retry")).extracting(ClaimedRun::runId).containsExactly(run);
     }
+
+    // ---------------------------------------------------------------- V204: misfire = late before claimable
+
+    /** A live node whose unbroken heartbeats started {@code aliveFor} ago (DB clock). */
+    private void liveNode(String id, Duration aliveFor) {
+        db.jdbc().sql("""
+                INSERT INTO scheduler_node (node_id, heartbeat_at, started_at, alive_since)
+                VALUES (?, clock_timestamp(), clock_timestamp() - ? * interval '1 millisecond',
+                        clock_timestamp() - ? * interval '1 millisecond')""")
+                .params(id, aliveFor.toMillis(), aliveFor.toMillis()).update();
+    }
+
+    private void clearNodes() {
+        db.jdbc().sql("DELETE FROM scheduler_node").update();
+    }
+
+    @Test
+    void runQueuedWhileTheClusterWasUpIsNotAMisfire() {
+        fx.tenant("mf-queued", 5);
+        UUID job = fx.job("mf-queued").misfire(MisfirePolicyType.SKIP).misfireThreshold(Duration.ofSeconds(60)).insert();
+        long queued = fx.run(job, Instant.now().minus(Duration.ofMinutes(5))); // waited behind the cap
+        try {
+            liveNode("up-1h", Duration.ofHours(1));
+            assertThat(claim("mf-queued")).extracting(ClaimedRun::runId).containsExactly(queued);
+        } finally {
+            clearNodes();
+        }
+    }
+
+    @Test
+    void runDueBeforeAClusterOutageEndedIsAMisfire() {
+        fx.tenant("mf-outage", 5);
+        UUID job = fx.job("mf-outage").misfire(MisfirePolicyType.SKIP).misfireThreshold(Duration.ofSeconds(60)).insert();
+        long missed = fx.run(job, Instant.now().minus(Duration.ofMinutes(5)));
+        long dueAfterRecovery = fx.run(job, Instant.now().minus(Duration.ofSeconds(5)));
+        try {
+            liveNode("back-30s", Duration.ofSeconds(30)); // the cluster came back 30 s ago
+            assertThat(claim("mf-outage")).extracting(ClaimedRun::runId).containsExactly(dueAfterRecovery);
+            assertThat(fx.state(missed)).isEqualTo("SKIPPED");
+        } finally {
+            clearNodes();
+        }
+    }
+
+    @Test
+    void runDueWhileTheTenantWasPausedIsAMisfire() {
+        fx.tenant("mf-paused", 5);
+        UUID job = fx.job("mf-paused").misfire(MisfirePolicyType.SKIP).misfireThreshold(Duration.ofSeconds(60)).insert();
+        long missed = fx.run(job, Instant.now().minus(Duration.ofMinutes(5)));
+        db.jdbc().sql("UPDATE tenant SET resumed_at = clock_timestamp() - interval '10 seconds' WHERE id = 'mf-paused'")
+                .update();
+        try {
+            liveNode("up-1h", Duration.ofHours(1));
+            assertThat(claim("mf-paused")).isEmpty();
+            assertThat(fx.state(missed)).isEqualTo("SKIPPED");
+        } finally {
+            clearNodes();
+        }
+    }
+
+    @Test
+    void coalesceAfterAnOutageCountsOnlyRunsDueBeforeRecovery() {
+        fx.tenant("mf-coal2", 5);
+        UUID job = fx.job("mf-coal2").misfire(MisfirePolicyType.COALESCE).misfireThreshold(Duration.ofSeconds(60))
+                .insert();
+        Instant now = Instant.now().truncatedTo(ChronoUnit.MILLIS);
+        long m1 = fx.run(job, now.minus(Duration.ofMinutes(30)));
+        long m2 = fx.run(job, now.minus(Duration.ofMinutes(20)));
+        long queued = fx.run(job, now.minus(Duration.ofMinutes(2))); // due after recovery, then queued
+        try {
+            liveNode("back-5m", Duration.ofMinutes(5));
+            List<ClaimedRun> started = claim("mf-coal2");
+            assertThat(started).extracting(ClaimedRun::runId).containsExactly(m2, queued);
+            assertThat(started.get(0).coalescedCount()).isEqualTo(2);
+            assertThat(started.get(1).coalescedCount()).isEqualTo(1);
+            assertThat(fx.state(m1)).isEqualTo("SKIPPED");
+        } finally {
+            clearNodes();
+        }
+    }
+
+    @Test
+    void staleHeartbeatsCountAsDownSoTheRuleFallsBackToDbNow() {
+        fx.tenant("mf-stale", 5);
+        UUID job = fx.job("mf-stale").misfire(MisfirePolicyType.SKIP).misfireThreshold(Duration.ofSeconds(60)).insert();
+        long missed = fx.run(job, Instant.now().minus(Duration.ofMinutes(5)));
+        db.jdbc().sql("""
+                INSERT INTO scheduler_node (node_id, heartbeat_at, started_at, alive_since)
+                VALUES ('dead', clock_timestamp() - interval '1 minute', clock_timestamp() - interval '2 hours',
+                        clock_timestamp() - interval '2 hours')""").update();
+        try {
+            assertThat(claim("mf-stale")).isEmpty(); // e.g. the DB just came back, no heartbeat yet
+            assertThat(fx.state(missed)).isEqualTo("SKIPPED");
+        } finally {
+            clearNodes();
+        }
+    }
 }

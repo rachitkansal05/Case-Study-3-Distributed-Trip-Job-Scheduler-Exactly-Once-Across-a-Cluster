@@ -21,11 +21,20 @@ import java.util.UUID;
 
 /**
  * Misfire handling at claim time (plan section 09), inside the claim transaction of {@link
- * JdbcClaimProtocol}. When a candidate is a {@code SCHEDULED} run whose lateness exceeds its job's
- * threshold ({@code now - scheduled_at > threshold}, DB time), the other due {@code SCHEDULED}
- * runs of the same job are locked and the job's {@link MisfirePolicy} decides: {@code SKIP} marks
- * the misfired ones {@code SKIPPED}; {@code COALESCE} fires the newest misfired one with {@code
- * coalesced_count = n} and skips the rest; {@code FIRE_NOW} fires all in order.
+ * JdbcClaimProtocol}. When a candidate is a {@code SCHEDULED} run that has misfired, the other due
+ * {@code SCHEDULED} runs of the same job are locked and the job's {@link MisfirePolicy} decides:
+ * {@code SKIP} marks the misfired ones {@code SKIPPED}; {@code COALESCE} fires the newest misfired
+ * one with {@code coalesced_count = n} and skips the rest; {@code FIRE_NOW} fires all in order.
+ *
+ * <p><b>Misfired means late before it could be claimed</b> (V204), not merely late: a run queued
+ * behind its own tenant's cap is late but was never missed. The policy is evaluated at {@code
+ * claimable_since}, the moment the tenant last became claimable: the later of the tenant's
+ * unpause ({@code tenant.resumed_at}) and the start of the live nodes' unbroken heartbeats ({@code
+ * min(scheduler_node.alive_since)}; a full-cluster or DB outage restarts it), or DB now when no
+ * node is live (protocol-level use without membership). A run misfired iff {@code claimable_since -
+ * scheduled_at > threshold}; runs that fell due after {@code claimable_since} are always on time.
+ * Approximation: a rolling restart of every node also moves {@code claimable_since}, so a run that
+ * was already queued for more than the threshold at that point counts as misfired.
  *
  * <p>Retries ({@code RETRY_WAIT}) are never treated as misfires: the occurrence already started
  * once, and {@code RETRY_WAIT -> SKIPPED} is not a legal transition. Runs with {@code
@@ -66,18 +75,52 @@ final class MisfireResolver {
              WHERE id = ANY (?) AND state = 'SCHEDULED'
             """;
 
-    Session session(Connection connection) {
-        return new Session(connection);
+    /* I1: when the tenant last became claimable (see class comment); DB clock, no locks. */
+    private static final String CLAIMABLE_SINCE = """
+            SELECT greatest(t.resumed_at, coalesce(
+                     (SELECT min(n.alive_since) FROM scheduler_node n
+                       WHERE n.heartbeat_at > clock_timestamp() - ? * interval '1 millisecond'),
+                     clock_timestamp())) AS claimable_since
+              FROM tenant t
+             WHERE t.id = ?
+            """;
+
+    private final long deadAfterMs;
+
+    /** @param deadAfter {@code membership.dead-after}: nodes with an older heartbeat are not live */
+    MisfireResolver(Duration deadAfter) {
+        this.deadAfterMs = deadAfter.toMillis();
+    }
+
+    Session session(Connection connection, String tenantId) {
+        return new Session(connection, tenantId);
     }
 
     /** Per-claim-transaction state: each job is resolved at most once. */
     final class Session {
         private final Connection c;
+        private final String tenantId;
         private final Map<UUID, Resolution> resolved = new HashMap<>();
         private final Set<Long> chosen = new HashSet<>();
+        private Instant claimableSince; // read once per claim, on the first late candidate
 
-        private Session(Connection c) {
+        private Session(Connection c, String tenantId) {
             this.c = c;
+            this.tenantId = tenantId;
+        }
+
+        /** {@code claimable_since}, never after the candidates' DB time {@code dbNow}. */
+        private Instant claimableSince(Instant dbNow) throws SQLException {
+            if (claimableSince == null) {
+                try (PreparedStatement ps = c.prepareStatement(CLAIMABLE_SINCE)) {
+                    ps.setLong(1, deadAfterMs);
+                    ps.setString(2, tenantId);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        claimableSince = rs.next() ? JdbcClaimProtocol.instant(rs, "claimable_since") : dbNow;
+                    }
+                }
+            }
+            return claimableSince.isAfter(dbNow) ? dbNow : claimableSince;
         }
 
         /**
@@ -93,10 +136,14 @@ final class MisfireResolver {
                     break;
                 }
                 Resolution res = resolved.get(cand.jobId());
+                // late at DB now is necessary (claimable_since <= now), so on-time claims skip the read
                 if (res == null && RunState.SCHEDULED.name().equals(cand.state()) && !cand.misfireExempt()
                         && MisfirePolicy.isMisfire(cand.scheduledAt(), cand.dbNow(), cand.threshold())) {
-                    res = resolveJob(cand);
-                    resolved.put(cand.jobId(), res);
+                    Instant since = claimableSince(cand.dbNow());
+                    if (MisfirePolicy.isMisfire(cand.scheduledAt(), since, cand.threshold())) {
+                        res = resolveJob(cand, since);
+                        resolved.put(cand.jobId(), res);
+                    }
                 }
                 if (res != null && res.skipped().contains(cand.runId())) {
                     absorbed = true;
@@ -122,8 +169,13 @@ final class MisfireResolver {
             }
         }
 
-        private Resolution resolveJob(Candidate cand) throws SQLException {
+        /**
+         * Decides one job at {@code since}: occurrences due by then go to the policy; later ones
+         * fell due while the tenant was claimable, so they are on time and fire individually.
+         */
+        private Resolution resolveJob(Candidate cand, Instant since) throws SQLException {
             List<Instant> times = new ArrayList<>();
+            List<Instant> later = new ArrayList<>();
             Map<Instant, Long> ids = new HashMap<>();
             try (PreparedStatement ps = c.prepareStatement(JOB_DUE)) {
                 ps.setObject(1, cand.jobId());
@@ -131,13 +183,13 @@ final class MisfireResolver {
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) {
                         Instant at = JdbcClaimProtocol.instant(rs, "scheduled_at");
-                        times.add(at);
+                        (at.isAfter(since) ? later : times).add(at);
                         ids.put(at, rs.getLong("id"));
                     }
                 }
             }
             MisfirePolicy policy = MisfirePolicy.of(MisfirePolicyType.valueOf(cand.misfire()));
-            MisfireDecision decision = policy.decide(times, cand.dbNow(), cand.threshold());
+            MisfireDecision decision = policy.decide(times, since, cand.threshold());
             Set<Long> skipped = new HashSet<>();
             for (Instant at : decision.toSkip()) {
                 skipped.add(ids.get(at));
@@ -152,6 +204,9 @@ final class MisfireResolver {
             for (Instant at : decision.toFire()) {
                 int count = decision.coalescedCountFor(at);
                 fire.put(ids.get(at), count > 1 ? count : null);
+            }
+            for (Instant at : later) {
+                fire.put(ids.get(at), null);
             }
             return new Resolution(fire, skipped);
         }
