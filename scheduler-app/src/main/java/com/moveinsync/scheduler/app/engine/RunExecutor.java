@@ -183,6 +183,13 @@ final class RunExecutor {
             Thread.currentThread().interrupt();
             return;
         } catch (RuntimeException e) {
+            if (active.lost() != null) {
+                // Woken from a freeze: the handler's own failure (e.g. a sink timeout) got here a few ms
+                // before the renewer flagged the lost lease, and the commit then died on the connection
+                // the freeze broke. Still a lease loss, and it must be counted as one.
+                leaseLost(active.lost());
+                return;
+            }
             log.warn("failure commit failed; the lease will expire and the run is retried: {}", e.toString());
             return;
         }
