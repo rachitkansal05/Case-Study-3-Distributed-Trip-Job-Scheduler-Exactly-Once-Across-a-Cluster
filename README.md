@@ -560,11 +560,11 @@ We rely on Patroni with etcd for database failover and treat these as preconditi
 
 ## Known limitations and what was not verified locally
 
-The build machine has no Docker. Everything below was written and checked as far as possible without it:
+**Run on the compose stack (2026-10-30, Docker Desktop on the same laptop):** `docker compose up --build` started all 8 services healthy on the first run, and every step of `docs/DEMO.md` behaved as written. `chaos/kill-during-alerts.sh` passed (run taken over 7.98 s after the kill with a higher token; 1,200 distinct deliveries, 49 re-sends absorbed, max 1 per key) and so did `chaos/freeze-during-alerts.sh` (30 s pause; the run finished on another node, the frozen node's stale commit matched 0 rows; 1,200 delivered once).
 
-- **`docker compose up --build` has not been run.** The compose file is checked by `ComposeConfigTest` (services, profiles, toxiproxy wiring, Prometheus and Grafana mounts) and the Dockerfiles follow the module layout, but the stack has never been started. Expect small fixes on the first real run.
-- **Docker-gated tests skip locally.** `FailoverFencingIT` and `StrictSyncIT` (Testcontainers) run only where Docker exists, such as CI.
-- **Chaos scripts** (`chaos/*.sh`) have only been checked with `bash -n`.
+Still not verified:
+
+- **Docker-gated tests skip locally.** `FailoverFencingIT` and `StrictSyncIT` (Testcontainers) run only where Docker is available to the build, such as CI.
 - **Patroni** (`deploy/patroni/`): YAML parsed and scripts syntax-checked; the images were never built and the cluster never started.
 - **The compose-mode load generator** (`LoadGenMain`) was never run against a live stack; the benchmark ran in-process.
 - **Benchmark scope.** All numbers come from one laptop with every process on it; the scaling bottleneck was not isolated. The 2 s p99 target is missed for a few seconds in a dead or frozen node's partitions (above).

@@ -95,6 +95,6 @@ The proof is in the tests: `ExactlyOnceEffectIT` (10,000 jobs with forced failur
 
 ## 5. What is not covered
 
-- The compose stack, the chaos scripts, the Patroni setup and the compose-mode load generator have never been run here (no Docker). `ComposeConfigTest` checks the compose file and the scripts pass `bash -n`.
+- The compose stack and both chaos scripts were run on Docker Desktop and passed (README "Known limitations"). The Patroni setup and the compose-mode load generator have not been run; the Docker-gated failover ITs run only where the build has Docker.
 - In the benchmark the 2 s p99 target is missed for runs that fall due in a dead or frozen node's partitions during the few seconds before its 6 s partition lease expires (p99 3.7 s after the kill, 5.3 s after the freeze, in that window). Running runs are not affected, and overall p99 stayed at 291 ms.
 - A handler that ignores the max-run-time interrupt keeps its worker thread until it returns (its run and slot are released). Dead-lettered runs are never purged (finished runs are, after 7 days), and the sink's delivery records have no retention.

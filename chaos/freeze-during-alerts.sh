@@ -113,8 +113,9 @@ if ((STALE_REJECTED > 0)); then
 else
     # Zero is legitimate: a 409 needs a request carrying the old token to reach the sink after the
     # new owner's first send. When the pause lands between two sends (the common case), the frozen
-    # node self-fences on wake-up and sends nothing, so the sink never sees the old token again.
-    warn "sink staleRejected is 0 for run ${RUN_ID}: the freeze landed between sends and the node self-fenced"
+    # node sends nothing more: it self-fences, or its next fenced write matches 0 rows (see the
+    # lease-lost counters above), so the sink never sees the old token again.
+    warn "sink staleRejected is 0 for run ${RUN_ID}: the freeze landed between sends, so no old-token send reached the sink"
 fi
 
 assert_exactly_once

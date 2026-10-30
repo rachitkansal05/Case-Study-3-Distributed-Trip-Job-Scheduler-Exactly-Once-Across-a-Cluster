@@ -1,10 +1,10 @@
 # Demo video script (about 9 minutes)
 
-Every command below was checked against the code (routes, bodies, roles) and the compose file. The compose stack and the chaos scripts have **not** been run on the machine these docs were written on (no Docker there), so do one dry run before recording.
+Every command below was dry-run on the compose stack (2026-10-30) and gave the output described. Do one run-through of your own before recording.
 
 **Before recording**
 
-- Docker with Compose v2, plus `bash`, `curl` and `jq` (on Windows use Git Bash). Two terminals and a browser.
+- Docker with Compose v2, plus `bash`, `curl` and `jq` (on Windows use Git Bash; `winget install jqlang.jq` installs jq). Two terminals and a browser.
 - Start the stack a few minutes early and wait until every service is `healthy`:
 
   ```bash
