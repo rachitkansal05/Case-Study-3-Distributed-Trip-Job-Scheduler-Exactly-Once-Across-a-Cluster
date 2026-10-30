@@ -1324,7 +1324,7 @@
           ]
         },
         {
-          "name": "Create a one-off alert due in 30 s (FIRE_NOW, so the replay runs)",
+          "name": "Create a one-off alert due in 30 s",
           "request": {
             "method": "POST",
             "header": [
@@ -1363,7 +1363,7 @@
                 }
               }
             },
-            "description": "FIRE_NOW on purpose: replay keeps the original scheduled_at, so a SKIP job replayed more than 60 s late would be SKIPPED, not run."
+            "description": "Any misfire policy works here: a replay is exempt from misfire handling, so even a SKIP job replayed long after its 60 s threshold runs again."
           },
           "event": [
             {

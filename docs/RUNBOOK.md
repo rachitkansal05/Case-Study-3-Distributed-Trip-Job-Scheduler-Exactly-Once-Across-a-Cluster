@@ -41,7 +41,7 @@ docker compose exec -e PGOPTIONS='-c default_transaction_read_only=on' postgres 
 - **Never** `UPDATE job_run` state, slot, lease or token columns by hand, and never `INSERT` or `DELETE` rows of `tenant_slot`. Only the scheduler code writes them: `JdbcClaimProtocol` for claims, renewals, checkpoints and commits, and the API for replays and cap changes, always with the lock order slot row first, then run row. A manual write can break the cap or let two nodes run the same job.
 - **Never** lower `fencing_epoch`, `fencing_seq` or `cluster_meta.cluster_generation`, and never edit the sink's `sink.run_fence` or `sink.delivery` tables. That turns off fencing and dedup.
 - **Never** edit `partition_lease` or `scheduler_node`. Nodes fix ownership themselves within about 7 s.
-- **Never** delete `dead_letter` rows. Replay them, or leave them.
+- **Never** delete `dead_letter` rows. Replay them, or leave them. (`RunPurge` deletes a *replayed* dead letter's row together with its run, 7 days after the replayed run finished; un-replayed ones are kept.)
 - Killing or restarting a scheduler node **is** safe: its runs are taken over within about 10.7 s (alert threshold 11.2 s) and the sink drops the duplicates.
 
 ---
@@ -847,7 +847,7 @@ SELECT tenant_id, count(*) AS due_waiting, min(due_at) AS oldest_due,
 | `SINK_5XX`, `SINK_TIMEOUT`, `SINK_UNAVAILABLE`, `TIMEOUT`, `IO_ERROR` | Sink healthy again (`SchedulerErrorRateHigh` resolved). |
 | `FENCING_CONFLICT` | Lease losses stopped (`SchedulerLeaseLostSpike` resolved). |
 
-**How replay works.** The same `job_run` row goes back to `SCHEDULED`, due now, with `attempt` and `lease_lost_count` reset. Its `idem_key` and checkpoint are kept, so the sink deduplicates anything already delivered and chunked jobs resume from their last checkpoint. `dead_letter.replayed_at` is set. A disabled job cannot be replayed.
+**How replay works.** The same `job_run` row goes back to `SCHEDULED`, due now, with `attempt` and `lease_lost_count` reset. Its `idem_key`, checkpoint and `scheduled_at` are kept, so the sink deduplicates anything already delivered and chunked jobs resume from their last checkpoint. The run is marked `misfire_exempt`, so it runs however long ago it was scheduled, whatever the job's misfire policy (a `SKIP` job replayed a day later still runs). `dead_letter.replayed_at` is set. A disabled job cannot be replayed.
 
 ### List
 
@@ -905,6 +905,25 @@ done < "$IDS" | tee "$IDS.log"
 ```
 
 The loop stops on anything other than 200 or 409. Rerunning it with the same `BATCH` is safe: done runs return the cached 200 or 409. Replayed runs drain at the tenant's cap; watch `SchedulerDeadLettersIncreasing` for runs that dead-letter again.
+
+---
+
+## Run retention
+
+`RunPurge` runs on every node every 10 minutes and deletes `SUCCEEDED`, `SKIPPED` and `CANCELLED` runs whose `finished_at` is more than 7 days old, 1,000 per transaction (`scheduler.run-purge.retention`, `.interval`, `.batch-size`, `.max-batches`). Nodes skip each other's rows (`FOR UPDATE SKIP LOCKED`). Unfinished and `DEAD_LETTERED` runs are never deleted; a replayed dead letter's `dead_letter` row goes with its run. A purged run disappears from `GET /jobs/{id}/runs`. Log line: `run purge deleted N finished runs older than PT168H`; a failure logs `run purge failed` and retries next interval.
+
+How much is waiting to be purged:
+
+```sql
+SELECT state, count(*) AS runs, min(finished_at) AS oldest
+  FROM job_run
+ WHERE state IN ('SUCCEEDED', 'SKIPPED', 'CANCELLED')
+   AND finished_at < clock_timestamp() - interval '7 days'
+ GROUP BY state;
+```
+
+- A growing count means the purge is failing or the retention was raised. Check the logs before changing anything.
+- **Do not** delete runs by hand. Never delete `DEAD_LETTERED` runs: they are the replay list.
 
 ---
 

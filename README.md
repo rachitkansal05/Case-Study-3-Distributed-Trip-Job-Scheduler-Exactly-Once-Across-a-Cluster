@@ -6,7 +6,7 @@ A cluster scheduler for MoveInSync trip jobs: nightly rosters at 22:00 tenant ti
 >
 > Design note: [`docs/DESIGN.md`](docs/DESIGN.md) · full plan: [`PLAN.md`](PLAN.md) (mirrors https://claude.ai/artifact/JuMnTBHToDBjXiXkPYSVz3) · benchmark: [`docs/BENCHMARK.md`](docs/BENCHMARK.md) · demo script: [`docs/DEMO.md`](docs/DEMO.md)
 
-**Status:** implemented. 843 automated tests (841 pass, 2 Docker-gated tests skip without Docker). Every number in this file was measured on the machine in [Benchmark](#benchmark) unless it says *estimate*. What could not be run locally is listed under [Known limitations](#known-limitations-and-what-was-not-verified-locally).
+**Status:** implemented. 855 automated tests (853 pass, 2 Docker-gated tests skip without Docker). Every number in this file was measured on the machine in [Benchmark](#benchmark) unless it says *estimate*. What could not be run locally is listed under [Known limitations](#known-limitations-and-what-was-not-verified-locally).
 
 ---
 
@@ -235,7 +235,11 @@ A run has **misfired** when it is claimed more than `misfireThreshold` (default 
 | `SKIP` | All 3 skipped; the next run is normal | Pickup alerts: a late alert is useless |
 | `COALESCE` | The newest runs once with `coalescedCount = 3`; the others are skipped | Roster generation: only the latest matters |
 
-**Retries** use exponential backoff with full jitter: `delay = random(0, min(5 min, 2 s × 2^attempt))`. Sink 5xx (`SINK_5XX`), timeouts (`SINK_TIMEOUT`) and the max-run-time stop (`TIMEOUT`) are retried. Payloads the handler cannot read (`INVALID_PAYLOAD`) and other sink 4xx (`SINK_REJECTED_<status>`) are dead-lettered at once. After `maxAttempts` (default 5, up to 100) the run is dead-lettered. An operator lists dead letters (error code and counts only, never payload data) and replays them: the **same run row and idempotency key** go back to `SCHEDULED`, so items delivered before the run died are not sent again. Replaying twice returns `409 DEAD_LETTER_ALREADY_REPLAYED`. Caveat: replay keeps the run's original `scheduled_at`, so for a `SKIP` or `COALESCE` job replayed more than `misfireThreshold` after its scheduled time, the claim applies the misfire policy and the run becomes `SKIPPED` instead of executing; only `FIRE_NOW` jobs (or replays within the threshold) always run again.
+**Retries** use exponential backoff with full jitter: `delay = random(0, min(5 min, 2 s × 2^attempt))`. Sink 5xx (`SINK_5XX`), timeouts (`SINK_TIMEOUT`) and the max-run-time stop (`TIMEOUT`) are retried. Payloads the handler cannot read (`INVALID_PAYLOAD`) and other sink 4xx (`SINK_REJECTED_<status>`) are dead-lettered at once. After `maxAttempts` (default 5, up to 100) the run is dead-lettered. An operator lists dead letters (error code and counts only, never payload data) and replays them: the **same run row and idempotency key** go back to `SCHEDULED`, so items delivered before the run died are not sent again. Replaying twice returns `409 DEAD_LETTER_ALREADY_REPLAYED`.
+
+**Replays and manual triggers ignore the misfire policy.** Both are explicit requests to run, so the run is flagged `misfire_exempt`: the claim runs it however late it is (a replay keeps the original `scheduled_at`, which the handler and the idempotency key depend on), never skips it and never coalesces it with the job's scheduled occurrences, which still follow the policy. A replayed run also does not report fire lag again; only a run's first start does (`ReplayMisfireIT`).
+
+**Max run time is a hard stop.** At `maxRunTime` the handler is interrupted and further effects are refused; the attempt fails with `TIMEOUT` and goes through the retries above. A handler that returns anyway is still a `TIMEOUT`, never a success. One that ignores the interrupt is abandoned one renew interval (3 s) later: the engine records the `TIMEOUT` for it with the run's fenced commit, which frees its slot, and stops renewing its lease (`MaxRunTimeIT`).
 
 ---
 
@@ -344,7 +348,7 @@ Metrics are at `/actuator/prometheus` on every node and on the sink; Prometheus 
 | `scheduler_lease_lost_total{reason}` | `stale_409`, `fenced_write_0_rows`, `self_fence` | > 5 for one reason in 5 min (`SchedulerLeaseLostSpike`) |
 | `scheduler_dead_letters_total{error_code}` | Dead letters by error code | Any `FENCING_CONFLICT` in 15 min (`SchedulerFencingConflictDeadLetters`) |
 | `scheduler_lease_renew_failures_total` | A node losing its leases | Any in 2 min (`SchedulerLeaseRenewFailures`) |
-| `scheduler_orphan_takeovers_total`, `scheduler_orphan_takeover_time_seconds` | Takeovers, and time from lease expiry to restart (buckets include 10.7 s and 11.2 s) | p99 > 11.2 s (`SchedulerOrphanTakeoverSlow`) |
+| `scheduler_orphan_takeovers_total`, `scheduler_orphan_takeover_time_seconds` | Takeovers, and time from the dead owner's last lease renewal to the restart (normally 10–10.7 s; buckets include 10.7 s and 11.2 s) | p99 > 11.2 s (`SchedulerOrphanTakeoverSlow`) |
 | `scheduler_partitions_owned{node}` | Partition spread | Total ≠ 128 for 10 s (`SchedulerPartitionsUnowned`) |
 | `scheduler_claim_batch_seconds` | Claim transaction latency | p99 > 100 ms for 5 min (`SchedulerClaimBatchSlow`) |
 | `scheduler_tenant_cap{tenant,kind}` | Configured vs effective cap | Effective > configured for 30 min (`SchedulerTenantCapDraining`) |
@@ -354,7 +358,7 @@ Metrics are at `/actuator/prometheus` on every node and on the sink; Prometheus 
 
 That is **13 alert rules** in [`ops/prometheus/alerts.yml`](ops/prometheus/alerts.yml), each with a `runbook_url` to its section of [`docs/RUNBOOK.md`](docs/RUNBOOK.md). There is no Alertmanager in the demo; firing alerts are listed at http://localhost:9090/alerts. `AlertRulesTest`, `GrafanaDashboardTest` and `RunbookTest` check the files against [`ops/metric-names.txt`](ops/metric-names.txt), and `MetricsIT` and `OpsMetricNamesIT` prove every listed name is really exported.
 
-Note that `scheduler_orphan_takeover_time_seconds` measures lease expiry → restart, which is normally under about 0.7 s; the 10.7 s takeover bound is counted from the crash and includes the up to 10 s left on the lease.
+`scheduler_orphan_takeover_time_seconds` is measured on the DB clock from the dead owner's last successful lease renewal (the expired `lease_until` minus the 10 s run lease: the last moment that node was proven alive) to the takeover claim. That is exactly the interval the 10.7 s bound limits, so the 11.2 s alert compares like with like; it is at most one renewal interval (3 s) longer than the time from the crash itself. `NodeCrashIT` checks that the recorded value matches its own measurement.
 
 **Logs** are JSON lines (profile `json`, used by compose). Request lines carry `traceId` and `tenantId`; lines written while a run executes carry `nodeId`, `runId`, `jobId`, `tenantId`, `fencingToken`, `attempt` and `idemKeyHash` (a hash, never the raw key). `LoggingIT` checks the fields and that no phone, email or coordinate from a payload reaches the output.
 
@@ -387,10 +391,10 @@ Results of the last full run on the build machine:
 | Module | Unit | Integration | Result |
 |---|---|---|---|
 | `scheduler-core` | 322 | — | all pass |
-| `scheduler-app` | 182 | 245 | 2 skipped (Docker-gated) |
+| `scheduler-app` | 182 | 257 | 2 skipped (Docker-gated) |
 | `notification-sink` | 47 | 35 | all pass |
 | `loadgen` | 9 | 3 | all pass |
-| **Total** | | | **843 tests, 841 passed, 2 skipped, 0 failures** |
+| **Total** | | | **855 tests, 853 passed, 2 skipped, 0 failures** |
 
 Run one test, for example: `./mvnw -B -pl scheduler-app -am verify -Dtest=none -Dsurefire.failIfNoSpecifiedTests=false -Dit.test=NodeCrashIT -Dfailsafe.failIfNoSpecifiedTests=false`.
 
@@ -482,7 +486,7 @@ A resource estimate for the target load (100,000 alerts in a 10-minute peak), de
 | PostgreSQL | 1 primary + 2 standbys (F1–F3), each about 4 vCPU, 8–16 GB RAM, SSD | One synchronous standby is required for durability on failover; the third member lets Patroni promote and keep a synchronous standby. The knee above (≈ 3,000 transitions/s on a shared laptop) leaves about 5× headroom at the target |
 | Patroni coordination | 3 small etcd members | Leader lease and the synchronous-standby record (F3, F4) |
 | Monitoring | Prometheus + Grafana, 1 small instance | 4 scrape targets every 5 s |
-| Storage growth | about one `job_run` row per run, plus one `sink.delivery` row per item | Finished runs are not deleted yet (see limitations); plan for a 7-day retention job |
+| Storage growth | about one `job_run` row per run kept, plus one `sink.delivery` row per item | `RunPurge` deletes finished runs 7 days after they finish (about 7 × the daily run count kept); dead-lettered runs stay until replayed. The sink's deliveries are not purged (see limitations) |
 
 The dominant cost is the replicated Postgres, which is the price of the exactly-once and failover guarantees. Running fewer than 3 scheduler nodes saves little and loses the ability to absorb a crash and a freeze at the same time.
 
@@ -564,10 +568,8 @@ The build machine has no Docker. Everything below was written and checked as far
 - **Patroni** (`deploy/patroni/`): YAML parsed and scripts syntax-checked; the images were never built and the cluster never started.
 - **The compose-mode load generator** (`LoadGenMain`) was never run against a live stack; the benchmark ran in-process.
 - **Benchmark scope.** All numbers come from one laptop with every process on it; the scaling bottleneck was not isolated. The 2 s p99 target is missed for a few seconds in a dead or frozen node's partitions (above).
-- **Max run time.** The hard stop at `maxRunTime` (`TIMEOUT`, retryable) is implemented but has no dedicated test.
-- **No run retention.** Finished `job_run` rows are never deleted; a partition-by-day retention job is planned. `api_idempotency` is purged after 24 h.
-- **Takeover alert semantics.** `SchedulerOrphanTakeoverSlow` compares lease-expiry-to-restart time (normally < 1 s) against 11.2 s, a crash-to-restart bound, so it fires only very late. See [Monitoring](#monitoring).
-- **Replay vs misfire.** A replayed dead letter of a `SKIP`/`COALESCE` job older than its misfire threshold is skipped, not run (see [Misfires](#misfires-retries-and-the-dead-letter-list)).
+- **Max run time.** A handler that ignores the interrupt at `maxRunTime` is abandoned, not killed (Java cannot stop a thread): the hard stop releases its run, slot and lease, but the thread keeps one worker of the node until it returns.
+- **Retention.** Finished runs are purged after 7 days (`RunPurge`, `scheduler.run-purge.*`) and `api_idempotency` after 24 h, but dead-lettered runs are kept until someone replays them, and the sink's `sink.delivery` (the dedup record) has no retention job.
 - No list-jobs endpoint, no `GET /tenants/{t}`, no early lease revocation on cap reduction, no Postgres row-level security (tenant isolation is enforced in every repository query).
 
 ---

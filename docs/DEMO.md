@@ -153,7 +153,7 @@ Show: another tenant's job is a 404 `JOB_NOT_FOUND`, indistinguishable from a jo
 
 ## 8:45 Tests and benchmark (45 s)
 
-Show a finished `./mvnw -B verify` (about 6 minutes, recorded beforehand): **843 tests, 841 passed, 2 skipped** (the Docker-gated `FailoverFencingIT` and `StrictSyncIT`), on embedded PostgreSQL, no Docker. Live, run a fast subset:
+Show a finished `./mvnw -B verify` (about 6 minutes, recorded beforehand): **855 tests, 853 passed, 2 skipped** (the Docker-gated `FailoverFencingIT` and `StrictSyncIT`), on embedded PostgreSQL, no Docker. Live, run a fast subset:
 
 ```bash
 ./mvnw -B -pl scheduler-app -am verify -Dtest=none -Dsurefire.failIfNoSpecifiedTests=false \
