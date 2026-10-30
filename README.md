@@ -12,7 +12,7 @@ It runs on three or more identical nodes with no leader. A node can be killed or
 >
 > Java 21 · Spring Boot 3.3 · PostgreSQL 16 · Docker Compose · Prometheus + Grafana
 
-**Status:** implemented and tested: 868 automated tests, 2 of which need Docker and skip without it. Every number in this file was measured on the machine described under [Benchmark](#9-proof-the-benchmark) unless it says *estimate*. What could not be verified locally is listed under [Known limitations](#13-known-limitations).
+
 
 ---
 
