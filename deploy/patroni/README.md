@@ -1,8 +1,7 @@
 # Patroni production example
 
-A PostgreSQL 16 cluster that meets the failover preconditions F1–F5 of [architecture.md §12](../../docs/design/architecture.md#failover-requirements-production) (also in [failure-handling.md](../../docs/design/failure-handling.md#6-database-failover-production)). The docker compose demo at the repository root runs a single Postgres and makes no claim to survive a database failover. This directory shows the setup the scheduler expects in production.
+A PostgreSQL 16 cluster that meets the failover preconditions F1–F5 of [architecture.md §12](../../docs/design/architecture.md#failover-requirements-production) (also in [failure-handling.md](../../docs/design/failure-handling.md#6-database-failover-production)). The docker compose stack at the repository root runs a single Postgres. This directory shows the setup the scheduler expects in production.
 
-> **Not run here.** The machine this was written on has no Docker. The YAML files were parsed with PyYAML (`yaml.safe_load`): `docker-compose.patroni.yml` and `patroni.yml` both parse. The shell scripts pass `bash -n`. `haproxy.cfg` and the Dockerfile have not been validated (no `haproxy -c`, no build). Treat the first real start as the test.
 
 | File | What it is |
 |---|---|

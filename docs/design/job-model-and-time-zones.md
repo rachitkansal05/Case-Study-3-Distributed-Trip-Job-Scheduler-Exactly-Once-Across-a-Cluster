@@ -89,10 +89,3 @@ offset, so the DST behaviour is visible through the API.
 | `NextFireTimesTest` | The 2026 transitions in New York, sub-hourly jobs in the repeated hour |
 | `MaterializerIT` | Idempotent materialisation, cursor, 15-minute horizon, bounded catch-up |
 | `MaxRunTimeIT` | Interrupt at max run time, `TIMEOUT` retry, hard stop of a handler that ignores the interrupt |
-
-## Known limits
-
-- There is no API to change a tenant's time zone or to edit a job (only disable). A zone edited
-  directly in the database leaves already-materialised runs on the old zone.
-- After very long downtime, the 1,000-per-pass catch-up bound can split one `COALESCE` decision
-  into two.

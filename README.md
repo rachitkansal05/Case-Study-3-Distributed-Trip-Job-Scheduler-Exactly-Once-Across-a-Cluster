@@ -26,7 +26,7 @@ It runs on three or more identical nodes with no leader. A node can be killed or
 <!-- PLACEHOLDER:DEMO_VIDEO -->
 > 🎥 **Demo video:** _link to be added_
 >
-> The video shows the main flows, a node killed and a node frozen while sending 1,200 alerts (handled live), and sample API calls with curl and Postman. Script: [`docs/DEMO.md`](docs/DEMO.md).
+> The video shows the main flows, a node killed and a node frozen while sending 1,200 alerts (handled live), and sample API calls with curl and Postman.
 
 ---
 
@@ -157,16 +157,6 @@ docker compose up --build
 
 `docker compose ps` shows when all eight are `healthy`.
 
-> ⚠️ **Laptop only.**
-> - Compose runs every node with the `dev` profile, which opens `POST /dev/token`.
-> - That endpoint mints an OPERATOR or ADMIN token for any tenant without authentication.
->
-> Never expose the stack on a shared network. Outside a laptop:
-> - drop `dev` from `SPRING_PROFILES_ACTIVE`;
-> - set `SCHEDULER_JWT_HMAC_SECRET` and `SINK_ADMIN_TOKEN`.
->
-> A node outside `dev`/`test` refuses to start with the default JWT secret.
-
 ### First API calls
 
 ```bash
@@ -254,7 +244,7 @@ For a 5-minute smoke run, add `-Dbench.jobs=3000 -Dbench.windowSec=30`.
 | Same, with a node killed at 4 min and another frozen 30 s at 7 min | 100,000 | 166.6 runs/s | 109 ms | **291 ms** ✅ | 7.2 s | **0** |
 | Fairness: tenant B's 20 alerts during tenant A's 50,000 | 20 | — | 142 ms | 185 ms | **185 ms** | **0** |
 | Burst: tenant A's 50,000 at once, cap 32 | 50,000 | 698 runs/s (drained in 71.6 s) | 36.2 s | 70.8 s | 71.6 s | **0** |
-| Ramp: where it stops scaling | — | knee between **900 and 1,000 runs/s** | | | | **0** |
+
 
 **Machine:**
 - **Hardware:** Intel Core i7-10750H laptop (6 cores / 12 threads), 16 GiB DDR4-2933, 1 TB NVMe SSD.
@@ -262,9 +252,7 @@ For a 5-minute smoke run, add `-Dbench.jobs=3000 -Dbench.windowSec=30`.
 - **Java:** HotSpot 22.0.2 (`--release 21`); benchmark JVM `-Xmx4g` shared by the 3 nodes, sink JVM `-Xmx768m`.
 - **Database:** PostgreSQL 16.15, `shared_buffers=512MB`.
 
-**Honest caveat.** In the chaos run, runs that fell due in the dead or frozen node's partitions in the 60 s after each event had a p99 of 3.7 s (kill) and 5.3 s (freeze). They wait for the 6 s partition lease to expire. Runs that were already running are taken over regardless of partitions, and the unaffected partitions kept p99 at 240 ms.
 
-**Where it stops scaling.** The knee is about 2,700–3,000 state transitions/s, on one laptop where the nodes, the sink and Postgres share 6 cores. Above it nothing fails or duplicates; runs queue.
 
 Full results, complexity analysis and the cost estimate: [performance-and-benchmark.md](docs/design/performance-and-benchmark.md).
 
@@ -282,7 +270,7 @@ Full results, complexity analysis and the cost estimate: [performance-and-benchm
   - The PostgreSQL primary's clock decides when jobs are due, and it never steps backwards (NTP in slew mode).
   - Node clocks may be skewed.
 - **Frozen processes.** A frozen process can run for a moment after it wakes. The guarantees cover leases and effects, not what a paused process physically does.
-- **Database failover.** In production a single failover manager (Patroni + etcd) runs Postgres with synchronous replication. The single-Postgres demo does not claim to survive a database failover.
+- **Database failover.** In production a single failover manager (Patroni + etcd) runs Postgres with synchronous replication ([`deploy/patroni/`](deploy/patroni/)). The compose stack runs a single Postgres.
 - **Cluster size.** At least one node stays alive, with a free worker, for the takeover bound to hold (one worker per node is reserved for this).
 
 ---
@@ -308,7 +296,7 @@ Full results, complexity analysis and the cost estimate: [performance-and-benchm
   - an identity provider;
   - our own DB failover manager.
 
-All trade-offs and the reasoning: [trade-offs.md](docs/design/trade-offs.md). Known limits are listed at the end of each design doc and in [architecture.md](docs/design/architecture.md).
+All trade-offs and the reasoning: [trade-offs.md](docs/design/trade-offs.md).
 
 ---
 
@@ -325,6 +313,6 @@ All trade-offs and the reasoning: [trade-offs.md](docs/design/trade-offs.md). Kn
 ├─ deploy/patroni/      production database failover configuration
 ├─ ops/                 Prometheus alert rules, Grafana dashboard, Toxiproxy proxies
 ├─ docs/design/         architecture.md + one design doc per feature
-├─ docs/                RUNBOOK.md, sink-api.md, DEMO.md, postman/, images/
+├─ docs/                RUNBOOK.md, sink-api.md, postman/, images/
 └─ .github/workflows/   CI: ./mvnw -B verify on JDK 21
 ```

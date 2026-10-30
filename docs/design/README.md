@@ -37,7 +37,6 @@ refer to it as "plan section NN".
 |---|---|
 | [`../RUNBOOK.md`](../RUNBOOK.md) | On-call runbook: one section per alert, linked from every alert rule |
 | [`../sink-api.md`](../sink-api.md) | HTTP API of the notification sink |
-| [`../DEMO.md`](../DEMO.md) | Demo video script with exact commands |
 | [`../postman/`](../postman/) | Postman collection and environment |
 | [`../../chaos/README.md`](../../chaos/README.md) | How to run the kill and freeze scripts |
 | [`../../deploy/patroni/README.md`](../../deploy/patroni/README.md) | Production database failover setup |

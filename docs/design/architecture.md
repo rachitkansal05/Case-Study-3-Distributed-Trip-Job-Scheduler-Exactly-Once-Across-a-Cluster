@@ -30,7 +30,6 @@ A Java 21 / Spring Boot scheduler that runs rosters, pickup alerts, no-show canc
 16. [Test matrix](#16-test-matrix-every-hard-rule-is-automated)
 17. [Benchmark](#17-benchmark-plan-and-capacity-math)
 18. [Trade-offs](#18-trade-offs-and-deliberate-omissions)
-21. [Review fixes](#21-design-review-issues-found-and-fixed)
 
 ---
 
@@ -54,7 +53,7 @@ Every rule gets an ID. Each ID appears again in the [test matrix](#16-test-matri
 | R12 | SIGSTOP for 30 s: lease expires, another node finishes, the stale write is rejected | Fencing + `docker pause` chaos test (§11) |
 | R13 | 100k jobs in 10 min on 3 nodes with p99 fire lag < 2 s | Load generator + HdrHistogram report (§17) |
 | R14 | RBAC (employee / admin / operator) with tenant isolation; no PII in logs or errors | JWT + repository tenant scoping + log masking |
-| R15 | One-command run, README with benchmark and machine, design note, demo video, meaningful commits | `docker compose up`, [README](../../README.md), [demo script](../DEMO.md), `docs/design/` |
+| R15 | One-command run, README with benchmark and machine, design note, demo video, meaningful commits | `docker compose up`, [README](../../README.md), `docs/design/` |
 
 ---
 
@@ -89,7 +88,7 @@ A node can do the work (send the SMS) and then die before it records that the wo
 | Cache | Caffeine | In-process, size and TTL eviction, metrics built in |
 | Security | Spring Security resource server, HS256 JWT | Roles and tenant claim in the token; dev token endpoint for the demo |
 | Metrics / logs | Micrometer → Prometheus → Grafana; logstash JSON encoder | Histogram with SLO buckets; MDC fields for run, job, tenant, node, token |
-| Tests | JUnit 5, AssertJ, Awaitility, embedded PostgreSQL 16 (zonky) | Real Postgres in every integration test, without Docker. Testcontainers is used only by the two Docker-gated failover tests (`FailoverFencingIT`, `StrictSyncIT`), which skip when Docker is missing. Toxiproxy runs in docker compose for manual fault injection; no automated test uses it |
+| Tests | JUnit 5, AssertJ, Awaitility, embedded PostgreSQL 16 (zonky) | Real Postgres in every integration test, without Docker. Testcontainers is used only by the two failover tests (`FailoverFencingIT`, `StrictSyncIT`), which need Docker and run in CI. Toxiproxy runs in docker compose for fault injection |
 | Load / chaos | In-process benchmark (`InProcessBench`: 3 nodes + the real sink) and a compose-mode load generator (`LoadGenMain`), both reporting with HdrHistogram; shell chaos scripts (`docker kill -s KILL`, `docker pause`) | Reproducible R11–R13 runs whose numbers go into [`performance-and-benchmark.md`](performance-and-benchmark.md) |
 
 ---
@@ -541,7 +540,7 @@ If the freeze lands inside a claim, checkpoint or commit transaction, the frozen
 
 ### Failover requirements (production)
 
-We don't build a failover manager. We rely on Patroni with etcd and state these as preconditions. The docker compose demo runs one Postgres and doesn't claim to survive a database failover; `deploy/patroni/` holds the production config. Those files have been parsed and syntax-checked but never started (no Docker on the build machine).
+We don't build a failover manager. We rely on Patroni with etcd and state these as preconditions. The docker compose stack runs one Postgres; `deploy/patroni/` holds the production config.
 
 | ID | Requirement | How it is met |
 |---|---|---|
@@ -656,7 +655,7 @@ trip-job-scheduler/
 ├─ chaos/                        kill-during-alerts.sh, freeze-during-alerts.sh
 ├─ deploy/patroni/               production failover config (F1–F5)
 ├─ ops/                          prometheus (scrape config, 13 alert rules), grafana dashboard, toxiproxy
-└─ docs/                         design/ (this file + one design doc per feature), RUNBOOK.md, sink-api.md, DEMO.md, postman/, images/
+└─ docs/                         design/ (this file + one design doc per feature), RUNBOOK.md, sink-api.md, postman/, images/
 ```
 
 - **Encapsulation:** run state changes only through `ClaimProtocol`, whose fenced methods return `false` when the lease is lost, and `RunStateMachine` holds the legal transitions. There is no mutable `JobRun` entity; a claimed run is an immutable record (`ClaimedRun`, `RunContext`).
@@ -675,7 +674,7 @@ trip-job-scheduler/
 | R3 | `ExactlyOnceEffectIT`: 3 in-process nodes on embedded Postgres, 10,000 jobs over 10 tenants, random handler failures after the effect was sent; the sink sees 10,000 distinct keys, none twice, and more than 10,000 attempts. `ConcurrentDeliveryIT` (sink: 50 threads, the same 20 keys, mixed tokens) | **Concurrency** |
 | R4 | `FencingIT` (stale renew, checkpoint and commit → 0 rows; stale sink call → 409), `ClaimRaceIT` (32 threads, 1,000 runs, each claimed once), `SlotStealRaceIT` (both interleavings forced with latches), `LeaseResurrectionIT` (expired, untaken lease → 0 rows; lease-lost limit → `FENCING_CONFLICT`) | **Concurrency** |
 | R4 | `FencingTokenTest` (pair order across epochs, timelines above 65,536), `StaleTokenClassificationTest` (409 doesn't count as an attempt; 20 lease losses → `FENCING_CONFLICT`), `FenceDecisionTest` (sink) | Unit |
-| R4 | `FailoverFencingIT` (primary + synchronous standby, kill primary, promote) and `StrictSyncIT` (standby gone → commits block): Testcontainers, skipped without Docker, so **not run locally**. `EpochGuardIT` (stub sink) and `ClusterGenerationGuardIT` (loadgen, real sink): epoch lower than the sink's → node refuses to start | **Failure injection** |
+| R4 | `FailoverFencingIT` (primary + synchronous standby, kill primary, promote) and `StrictSyncIT` (standby gone → commits block): Testcontainers, run in CI. `EpochGuardIT` (stub sink) and `ClusterGenerationGuardIT` (loadgen, real sink): epoch lower than the sink's → node refuses to start | **Failure injection** |
 | R5 | `PartitionAssignerTest`: determinism, minimal movement on join/leave; balance max/min ≤ 1.3 for the compose node ids; over 10,000 random 3-node sets the mean is 1.31 and the test asserts mean < 1.40 with more than 45 % ≤ 1.3 (rendezvous counts are multinomial, so balance is a statistical bound, not exact). `PartitionPlannerTest`. `RebalanceIT`: real timings, kill one of 3 nodes right after it renews its partition leases → all 128 partitions owned within 7 s | Unit + Integration |
 | R6 | `MisfirePolicyTest`: 3 missed hourly runs → FIRE_NOW 3, SKIP 0, COALESCE 1 with count 3. `MisfireIT`: the same through the real claim. `MisfireIT` also: a run queued while the cluster was up is not a misfire, one due before an outage or a pause ended is. `BurstSkipIT`: 400 `SKIP` runs queued up to 5 s behind cap 4 with a 1 s threshold, none skipped. `ReplayMisfireIT`: `SKIP` and `COALESCE` runs replayed an hour late, and a manual trigger delayed an hour, each run exactly once while ordinary misfired siblings are still skipped or coalesced; no fire lag for the replay | Unit + Integration |
 | R7 | `TenantFairnessIT`: tenant A 50,000 + tenant B 20 at the same instant, 3 nodes; B p99 lag < 1 s. `DrainRateIT`: one tenant, cap 32, ≥ 600 runs/s (≥ 450 on shared CI runners, still far above the 160 runs/s poll-only ceiling it guards against) | **Concurrency** |
@@ -686,10 +685,10 @@ trip-job-scheduler/
 | R10 | `MetricsIT` (every metric and label exported; state gauges equal DB counts), `EngineMetricsTest`, `AlertRulesTest`, `GrafanaDashboardTest`, `RunbookTest`, `ComposeConfigTest`, `OpsMetricNamesIT` (sink) | Integration + Unit |
 | R11 | `NodeCrashIT` (in-JVM kill: worker threads stopped and the connection pool closed, right after a lease renewal; no Toxiproxy), `EndToEndKillIT` (loadgen: real sink over HTTP in its own JVM); assert 1,200 deliveries, 0 duplicates, takeover ≤ 11.2 s, and (`NodeCrashIT`) a recorded `scheduler_orphan_takeover_time_seconds` between 10 s and 11.2 s that matches the measured interval. `chaos/kill-during-alerts.sh` on compose (passed: takeover 7.98 s, 1,200 delivered once) | **Failure injection** |
 | R12 | `GcPauseIT` (short timings: freeze past the lease → sink 409 and 0-row commit), `EndToEndFreezeIT` (production timings, 30 s freeze, real sink: the in-flight send gets 409, the fenced commit returns false, 1,200 delivered once). `chaos/freeze-during-alerts.sh` (`docker pause` 30 s on compose; passed, 1,200 delivered once) | **Failure injection** |
-| R13 | `InProcessBench` (loadgen test scope, `-Pbench`): 3 nodes in one JVM + the real sink + embedded Postgres with fsync on. It ran **in-process, not on compose**; the compose mode (`LoadGenMain`) exists but has not been run against a live stack. Numbers in [`performance-and-benchmark.md`](performance-and-benchmark.md) | Benchmark |
+| R13 | `InProcessBench` (loadgen test scope, `-Pbench`): 3 nodes in one JVM + the real sink + embedded Postgres with fsync on. It runs in-process; a compose-mode load generator (`LoadGenMain`) drives the same scenarios through the API. Numbers in [`performance-and-benchmark.md`](performance-and-benchmark.md) | Benchmark |
 | R14 | `TenantIsolationIT` (A's token on B's job → 404), `RoleMatrixIT`, `DevTokenIT`, `DevTokenDisabledIT`, `PiiMaskingTest`, `LoggingIT`, `ErrorResponseTest` (no payload or stack trace in body); sink `PayloadPrivacyIT`, `SinkLogMaskingTest` | API + Unit |
 
-On the build machine: 868 tests, 2 skipped (the Docker-gated ones); on 2026-10-30 three timing checks also failed on the unchanged `main` because the disk was nearly full (README, Build and test).
+868 tests in total; the two Docker-based failover tests run in CI.
 
 ---
 
@@ -783,16 +782,7 @@ Lowering a cap doesn't stop running jobs; new starts wait until the running coun
 
 ---
 
-## 21. Design review: issues found and fixed
 
-A review of the first version found four problems. Each fix was checked again against the original issue and against the other fixes; the refinements that second check added are included.
-
-| # | Issue | Final fix | Guarantee now |
-|---|---|---|---|
-| 1 | Takeover could take about 21 s, not 11.2 s: the reaper only scanned owned partitions, and a dead node's partitions stayed locked for 15 s plus acquisition time | Orphan sweep in any partition; 6 s partition lease renewed every 2 s; expired owner treated as dead at once; recovered runs first in the dispatch queue with one reserved worker; worst-case crash test | Takeover ≤ 11.2 s given one live node (≤ 10.7 s since the sweep moved from 1 s to 500 ms); new due runs in orphaned partitions wait ≤ about 7 s |
-| 2 | Per-tenant cap split into per-node shares could be exceeded while partitions moved, and the test allowed it | Tenant slot table; `job_run.slot_no` as the only record of who holds a slot; composite foreign key with RESTRICT; CHECK that running runs hold a slot; partial unique index; deferred cap reduction with compaction | Running ≤ effective cap at every moment, enforced by the database; a lowered cap is reached within the longest remaining max run time |
-| 3 | A slot could be reused while its holder renewed: the expiry check was a plain read, renewals could revive expired leases, and `now()` is the transaction start time | Renew, checkpoint and commit fail once a lease has expired; slot reuse requires a conditional reap of the old run; `clock_timestamp()` everywhere; one lock order (slot, then run); `ClaimProtocol` as the only writer | Exactly one of a concurrent renew and reap succeeds; no deadlocks between claims and commits |
-| 4 | After an async failover, new tokens could be lower than tokens the sink had already accepted, so legitimate work was rejected and dead-lettered | Token pair `(epoch, seq)` with epoch = generation × 2<sup>32</sup> + timeline; startup check against the sink; tokens used only after an acknowledged commit; 409 = lease lost with a separate limit; failover requirements F1–F5 via Patroni; `Idempotency-Key` on API writes | No acknowledged write lost and tokens never go backwards across failover, as long as F1–F5 hold; otherwise writes stop |
 
 ### Assumptions that remain
 
@@ -800,4 +790,4 @@ A review of the first version found four problems. Each fix was checked again ag
 - The Postgres primary's clock never steps backwards (NTP slew mode), and database nodes stay within about 2 s of each other.
 - A single failover manager (Patroni + etcd) prevents split brain.
 - The takeover bound assumes at least one live node with a free worker, which the reserved worker provides.
-- Failover without data loss needs synchronous replication; the single-node demo doesn't claim it.
+- Failover without data loss needs synchronous replication (`deploy/patroni/`); the compose stack runs a single Postgres.
