@@ -23,10 +23,11 @@ It runs on three or more identical nodes with no leader. A node can be killed or
 
 ## Demo video
 
-<!-- PLACEHOLDER:DEMO_VIDEO -->
-> 🎥 **Demo video:** _link to be added_
->
-> The video shows the main flows, a node killed and a node frozen while sending 1,200 alerts (handled live), and sample API calls with curl and Postman.
+🎥 **[Watch the demo video](docs/media/demo-video.mp4)** (MP4, 58 MB; GitHub opens it in the file viewer, or use *Download*).
+
+It shows the main flows, a node killed and a node frozen while sending 1,200 alerts (handled live), and sample API calls with curl and Postman.
+
+🧪 **Test it yourself:** [`docs/DEMO.md`](docs/DEMO.md) is a step-by-step reviewer guide. It walks through the same flows in about 20 minutes, with every command and the result to expect.
 
 ---
 
@@ -64,6 +65,7 @@ It runs on three or more identical nodes with no leader. A node can be killed or
 | Trade-offs and deliberate omissions | [trade-offs.md](docs/design/trade-offs.md) |
 
 **Other references:**
+- [`docs/DEMO.md`](docs/DEMO.md): reviewer guide, test every claim yourself step by step;
 - [`docs/RUNBOOK.md`](docs/RUNBOOK.md): on-call runbook, one section per alert;
 - [`docs/sink-api.md`](docs/sink-api.md): notification sink API;
 - [`docs/postman/`](docs/postman/): Postman collection;
@@ -335,6 +337,6 @@ All trade-offs and the reasoning: [trade-offs.md](docs/design/trade-offs.md).
 ├─ deploy/patroni/      production database failover configuration
 ├─ ops/                 Prometheus alert rules, Grafana dashboard, Toxiproxy proxies
 ├─ docs/design/         architecture.md + one design doc per feature
-├─ docs/                RUNBOOK.md, sink-api.md, postman/, images/
+├─ docs/                DEMO.md (reviewer guide), RUNBOOK.md, sink-api.md, postman/, images/, media/
 └─ .github/workflows/   CI: ./mvnw -B verify on JDK 21
 ```

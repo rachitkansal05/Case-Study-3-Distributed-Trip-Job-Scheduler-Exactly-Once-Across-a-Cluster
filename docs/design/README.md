@@ -35,6 +35,7 @@ refer to it as "plan section NN".
 
 | Document | Purpose |
 |---|---|
+| [`../DEMO.md`](../DEMO.md) | Reviewer guide: test every claim yourself, step by step |
 | [`../RUNBOOK.md`](../RUNBOOK.md) | On-call runbook: one section per alert, linked from every alert rule |
 | [`../sink-api.md`](../sink-api.md) | HTTP API of the notification sink |
 | [`../postman/`](../postman/) | Postman collection and environment |
