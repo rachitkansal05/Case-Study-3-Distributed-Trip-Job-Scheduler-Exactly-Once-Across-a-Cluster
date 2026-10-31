@@ -23,11 +23,11 @@ It runs on three or more identical nodes with no leader. A node can be killed or
 
 ## Demo video
 
-🎥 **[Watch the demo video](docs/media/demo-video.mp4)** (MP4, 58 MB; GitHub opens it in the file viewer, or use *Download*).
+🎥 **[Watch the demo video](docs/media/demo-video.mp4)**
 
-It shows the main flows, a node killed and a node frozen while sending 1,200 alerts (handled live), and sample API calls with curl and Postman.
+Video shows the main flows, a node killed and a node frozen while sending 1,200 alerts (handled live) and daylight saving , and sample API calls with curl.
 
-🧪 **Test it yourself:** [`docs/DEMO.md`](docs/DEMO.md) is a step-by-step reviewer guide. It walks through the same flows in about 20 minutes, with every command and the result to expect.
+To test this doc can be followed [`docs/DEMO.md`](docs/DEMO.md) 
 
 ---
 
