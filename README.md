@@ -160,6 +160,8 @@ Each row with its detection and the test that proves it: [failure-handling.md](d
 - JDK 21 or newer, only for building and running the tests without Docker (the wrapper downloads Maven);
 - `jq`, for the curl examples and the chaos scripts.
 
+> **Note:** Docker must be running before you run the command below. On Windows and macOS, open **Docker Desktop** and wait until it shows "Engine running". Otherwise the command fails with `failed to connect to the docker API`.
+
 ```bash
 docker compose up --build
 ```
